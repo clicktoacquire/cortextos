@@ -469,30 +469,19 @@ export class AgentManager {
     // Start agent
     await agentProcess.start();
 
-    // Spawn-verify (gen-B): if the PTY could not be spawned after retries
-    // (posix_spawnp / OS resource exhaustion), the agent is NOT running. Do not
-    // start its cron scheduler, fast-checker, or pollers — the fast-checker's
-    // bootstrap-timeout would otherwise log "Bootstrap complete" for a corpse
-    // and leave a zombie registry entry. The fleet-wide operator alert is
-    // drained + sent by the daemon's periodic check.
     if (agentProcess.getStatus().status === 'spawn-failed') {
       log(`[agent-manager] ${name}: SPAWN-FAILED — not starting checker/crons/pollers (agent is not running)`);
       return;
     }
 
-    // Subtask 2.2: Auto-migrate crons from config.json → crons.json before
-    // starting the scheduler, so the scheduler always has a populated crons.json
-    // to read from.  The migration is idempotent (marker file prevents re-runs).
     const configJsonPath = join(agentDir, 'config.json');
     migrateCronsForAgent(name, configJsonPath, this.ctxRoot, {
       log: (msg) => log(`[migration] ${msg}`),
     });
 
-    // Wire daemon-level CronScheduler for this agent.
-    // The scheduler reads crons.json, fires crons, and injects prompts into
-    // the agent PTY via injectAgent().  This is the Phase 2 daemon-managed
-    // external cron system — agents no longer need to call CronCreate on boot.
     this.startAgentCronScheduler(name);
+
+    agentProcess.scheduleCronVerification();
 
     // Start fast checker in background
     checker.start().catch(err => {

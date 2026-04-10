@@ -672,3 +672,39 @@ describe('AgentProcess - Area 4.3 midnight crash-budget reset (B:F-04)', () => {
     } finally { vi.useRealTimers(); }
   });
 });
+
+describe('AgentProcess - cron auto-verification', () => {
+  it('scheduleCronVerification() is a no-op when config has no crons', async () => {
+    const ap = new AgentProcess('alice', mockEnv, {});
+    await ap.start();
+    // Should not throw, should not schedule anything
+    ap.scheduleCronVerification();
+    // No inject calls expected (beyond any from start)
+    expect(mockInjectMessage).not.toHaveBeenCalled();
+  });
+
+  it('scheduleCronVerification() is a no-op when config has only once crons', async () => {
+    const ap = new AgentProcess('alice', mockEnv, {
+      crons: [{ name: 'reminder', type: 'once' as const, fire_at: '2099-01-01T00:00:00Z', prompt: 'test' }],
+    });
+    await ap.start();
+    ap.scheduleCronVerification();
+    // Wait briefly to confirm nothing fires
+    await new Promise(r => setTimeout(r, 100));
+    expect(mockInjectMessage).not.toHaveBeenCalled();
+  });
+
+  it('scheduleCronVerification() schedules verification when config has recurring crons', async () => {
+    const ap = new AgentProcess('alice', mockEnv, {
+      crons: [
+        { name: 'heartbeat', interval: '4h', prompt: 'check in' },
+        { name: 'research', type: 'recurring' as const, interval: '24h', prompt: 'research' },
+      ],
+    });
+    await ap.start();
+    // This should not throw — verification runs in background
+    ap.scheduleCronVerification();
+    // Verification is waiting for idle flag — no immediate injection
+    expect(mockInjectMessage).not.toHaveBeenCalled();
+  });
+});
