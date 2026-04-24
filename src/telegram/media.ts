@@ -140,7 +140,7 @@ export async function processMediaMessage(
 
   // Voice
   if (msg.voice) {
-    const fileName = `voice_${date}.ogg`;
+    const fileName = `voice_${date}_${msg.voice.file_unique_id}.ogg`;
     const fileResponse = await api.getFile(msg.voice.file_id);
     const filePath = fileResponse?.result?.file_path;
     if (!filePath) return null;
@@ -188,7 +188,7 @@ export async function processMediaMessage(
 
   // Video Note (round video)
   if (msg.video_note) {
-    const fileName = `videonote_${date}.mp4`;
+    const fileName = `videonote_${date}_${msg.video_note.file_unique_id}.mp4`;
     const fileResponse = await api.getFile(msg.video_note.file_id);
     const filePath = fileResponse?.result?.file_path;
     if (!filePath) return null;

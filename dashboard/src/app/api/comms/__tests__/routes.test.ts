@@ -217,8 +217,8 @@ describe('POST /api/comms/upload', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.success).toBe(true);
-    expect(data.path.startsWith('media/dashboard-uploads/')).toBe(true);
-    expect(data.url.startsWith('/api/media/media/dashboard-uploads/')).toBe(true);
+    expect(data.path.startsWith('dashboard-uploads/')).toBe(true);
+    expect(data.url.startsWith('/api/media/dashboard-uploads/')).toBe(true);
     expect(data.filename.endsWith('.png')).toBe(true);
 
     const absPath = path.join(rootTmp, data.path);
@@ -254,7 +254,7 @@ describe('POST /api/comms/upload', () => {
 
     // And the file must live inside the intended upload dir, not above it.
     const absPath = path.resolve(rootTmp, data.path);
-    const uploadDir = path.resolve(rootTmp, 'media', 'dashboard-uploads');
+    const uploadDir = path.resolve(rootTmp, 'dashboard-uploads');
     expect(absPath.startsWith(uploadDir + path.sep)).toBe(true);
   });
 
