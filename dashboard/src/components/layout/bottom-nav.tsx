@@ -22,6 +22,7 @@ import {
   IconX,
   IconDatabase,
   IconMessageQuestion,
+  IconBulb,
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
 
@@ -35,6 +36,7 @@ const mainTabs = [
 const morePages = [
   { label: 'Agents', href: '/agents', icon: IconRobot },
   { label: 'Answers', href: '/answers', icon: IconMessageQuestion },
+  { label: 'Recommendations', href: '/recommendations', icon: IconBulb },
   { label: 'Comms', href: '/comms', icon: IconMessages },
   { label: 'Activity', href: '/activity', icon: IconActivity },
   { label: 'Knowledge Base', href: '/knowledge-base', icon: IconBook2 },
