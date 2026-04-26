@@ -9,14 +9,8 @@ vi.mock('@google-cloud/bigquery', () => {
   };
 });
 
-const mockCreate = vi.fn();
-vi.mock('@anthropic-ai/sdk', () => {
-  return {
-    default: class MockAnthropic {
-      messages = { create: mockCreate };
-    },
-  };
-});
+const mockFetch = vi.fn();
+vi.stubGlobal('fetch', mockFetch);
 
 const SAMPLE_ROWS = [
   {
@@ -37,6 +31,12 @@ const SAMPLE_ROWS = [
   },
 ];
 
+function llmResponse(text: string) {
+  return new Response(JSON.stringify({
+    choices: [{ message: { content: text } }],
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+}
+
 function makeRequest(body: Record<string, unknown>) {
   return new Request('http://localhost:3000/api/questions', {
     method: 'POST',
@@ -48,7 +48,8 @@ function makeRequest(body: Record<string, unknown>) {
 describe('POST /api/questions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.ANTHROPIC_API_KEY = 'test-key';
+    process.env.OPENROUTER_API_KEY = 'test-or-key';
+    delete process.env.ANTHROPIC_API_KEY;
   });
 
   it('returns 400 when question is missing', async () => {
@@ -69,9 +70,9 @@ describe('POST /api/questions', () => {
 
   it('returns answer with correct shape on success', async () => {
     mockQuery.mockResolvedValueOnce([SAMPLE_ROWS]);
-    mockCreate.mockResolvedValueOnce({
-      content: [{ type: 'text', text: 'Your CPL went up because spend increased while conversions held flat.' }],
-    });
+    mockFetch.mockResolvedValueOnce(
+      llmResponse('Your CPL went up because spend increased while conversions held flat.'),
+    );
 
     const { POST } = await import('../route');
     const res = await POST(
@@ -106,14 +107,12 @@ describe('POST /api/questions', () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.answer).toContain('No performance data');
-    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('passes correct params to BQ query', async () => {
     mockQuery.mockResolvedValueOnce([SAMPLE_ROWS]);
-    mockCreate.mockResolvedValueOnce({
-      content: [{ type: 'text', text: 'Test answer.' }],
-    });
+    mockFetch.mockResolvedValueOnce(llmResponse('Test answer.'));
 
     const { POST } = await import('../route');
     await POST(
@@ -129,7 +128,8 @@ describe('POST /api/questions', () => {
     expect(callArgs.params.days).toBe(30);
   });
 
-  it('returns 500 when ANTHROPIC_API_KEY is missing', async () => {
+  it('returns 500 when no API key is configured', async () => {
+    delete process.env.OPENROUTER_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
 
     const { POST } = await import('../route');
@@ -142,6 +142,6 @@ describe('POST /api/questions', () => {
 
     expect(res.status).toBe(500);
     const json = await res.json();
-    expect(json.error).toContain('ANTHROPIC_API_KEY');
+    expect(json.error).toContain('not configured');
   });
 });
