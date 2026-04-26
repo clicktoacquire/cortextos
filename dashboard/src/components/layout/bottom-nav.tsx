@@ -20,6 +20,8 @@ import {
   IconClock,
   IconTarget,
   IconX,
+  IconDatabase,
+  IconMessageQuestion,
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
 
@@ -32,12 +34,14 @@ const mainTabs = [
 
 const morePages = [
   { label: 'Agents', href: '/agents', icon: IconRobot },
+  { label: 'Answers', href: '/answers', icon: IconMessageQuestion },
   { label: 'Comms', href: '/comms', icon: IconMessages },
   { label: 'Activity', href: '/activity', icon: IconActivity },
   { label: 'Knowledge Base', href: '/knowledge-base', icon: IconBook2 },
   { label: 'Workflows', href: '/workflows', icon: IconClock },
   { label: 'Strategy', href: '/strategy', icon: IconTarget },
   { label: 'Experiments', href: '/experiments', icon: IconFlask },
+  { label: 'Warehouse', href: '/warehouse', icon: IconDatabase },
   { label: 'Skills', href: '/skills', icon: IconPuzzle },
   { label: 'Settings', href: '/settings', icon: IconSettings },
 ];
