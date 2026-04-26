@@ -90,6 +90,8 @@ export async function fetchFacts(
       return { ...base, facts: await trendFacts(client_id, bounds) };
     case 'pacing':
       return { ...base, facts: await pacingFacts(client_id) };
+    case 'cost_per_lead':
+      return { ...base, facts: await costPerLeadFacts(client_id, bounds) };
     default:
       return { ...base, available: false, not_available_reason: 'No handler.' };
   }
@@ -296,6 +298,42 @@ async function pacingFacts(client_id: string): Promise<Record<string, unknown>> 
     mtd_spend: round(mtd),
     daily_avg: round(mtd / daysElapsed),
     projected_month_end: round(projected),
+  };
+}
+
+async function costPerLeadFacts(
+  client_id: string,
+  b: PeriodBounds,
+): Promise<Record<string, unknown>> {
+  const sql = `
+    SELECT
+      platform,
+      ROUND(SUM(spend), 2) AS spend,
+      ROUND(SUM(conversions), 2) AS conversions,
+      SAFE_DIVIDE(SUM(spend), SUM(conversions)) AS cpl
+    FROM ${tableRef}
+    WHERE client_id = @client_id
+      AND metric_date BETWEEN @start AND @end
+      AND entity_type = 'campaign'
+    GROUP BY platform
+    ORDER BY spend DESC
+  `;
+  const rows = await runQuery<{
+    platform: string;
+    spend: number;
+    conversions: number;
+    cpl: number | null;
+  }>(sql, { client_id, start: b.start, end: b.end });
+  const totalSpend = rows.reduce((s, r) => s + Number(r.spend ?? 0), 0);
+  const totalConversions = rows.reduce((s, r) => s + Number(r.conversions ?? 0), 0);
+  return {
+    period_start: b.start,
+    period_end: b.end,
+    days: b.days,
+    total_spend: round(totalSpend),
+    total_conversions: round(totalConversions),
+    cost_per_lead: totalConversions > 0 ? round(totalSpend / totalConversions) : null,
+    by_platform: rows,
   };
 }
 

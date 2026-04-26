@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { QUESTIONS, QUESTION_BY_ID, isQuestionId } from '../registry';
 
 describe('questions registry', () => {
-  it('exposes exactly the 10 confirmed PRD questions', () => {
-    expect(QUESTIONS).toHaveLength(10);
+  it('exposes the 13 registry questions (10 PRD + 3 CRO additions)', () => {
+    expect(QUESTIONS).toHaveLength(13);
     const ids = QUESTIONS.map((q) => q.id).sort();
     expect(ids).toEqual(
       [
@@ -12,8 +12,11 @@ describe('questions registry', () => {
         'best_creatives',
         'best_keywords',
         'best_lp_variant',
+        'cost_per_lead',
+        'goal_vs_actual',
         'next_test',
         'pacing',
+        'recommendations',
         'revenue',
         'spend',
         'trend_vs_prior',

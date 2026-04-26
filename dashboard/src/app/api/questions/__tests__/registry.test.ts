@@ -46,7 +46,7 @@ describe('GET /api/questions (registry list)', () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(Array.isArray(json.questions)).toBe(true);
-    expect(json.questions).toHaveLength(10);
+    expect(json.questions).toHaveLength(13);
     const ids = json.questions.map((q: { id: string }) => q.id);
     expect(ids).toContain('spend');
     expect(ids).toContain('revenue');

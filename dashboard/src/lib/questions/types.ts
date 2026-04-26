@@ -16,7 +16,10 @@ export type QuestionId =
   | 'trend_vs_prior'
   | 'next_test'
   | 'best_lp_variant'
-  | 'pacing';
+  | 'pacing'
+  | 'cost_per_lead'
+  | 'recommendations'
+  | 'goal_vs_actual';
 
 export interface FactBundle {
   question_id: QuestionId;
