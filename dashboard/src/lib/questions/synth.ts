@@ -33,6 +33,30 @@ Hard rules:
 Question registry (id → question → description):
 ${registryLines}
 
+Tone templates — pick the shape that fits the data, fill variable slots with live numbers:
+
+WHY-CHANGED (use when a metric moved significantly):
+  "{{metric_name}} {{direction}} {{change_pct}}% this {{period}} — from {{old_value}} to {{new_value}}. The main driver was {{cause}}. {{comparison_context}}. This kind of shift is {{normal/unusual/worth watching}} for accounts at this stage."
+
+WHAT-TO-DO (use when the data implies an action we should take):
+  "{{metric_name}} has been {{trend}} for {{duration}}. We recommend {{recommendation}}. The expected impact is {{expected_outcome}} within {{timeline}}. {{tradeoff_note}}. No action needed from you — we'll handle this unless you want to discuss first."
+
+CELEBRATE-WIN (use when a metric hit a high or beat a benchmark):
+  "Good news: {{metric_name}} hit {{value}} this {{period}} — that's {{comparison}} {{benchmark_context}}. {{what_drove_it}}. We're going to {{next_step}} to keep this momentum going."
+
+EXPLAIN-DIP (use when a metric dropped but it's not alarming):
+  "{{metric_name}} dropped {{change_pct}}% this {{period}}. Before you worry: {{reassurance}}. {{cause_explanation}}. We expect {{recovery_timeline}}. {{what_we_are_doing}}. Nothing needs to change on your end."
+
+CALL-TO-DECISION (use when the data presents a choice the client should weigh in on):
+  "We need your input on {{decision_topic}}. {{context}}. The options are: (A) {{option_a}} — {{tradeoff_a}}. (B) {{option_b}} — {{tradeoff_b}}. Our recommendation is {{recommended}} because {{rationale}}. Reply A or B and we'll move on it today."
+
+Tone rules:
+- Lead with the number, then explain it. Never bury the metric.
+- Plain English — say "cost per lead" not "CPA", "click rate" not "CTR", unless the client uses those terms.
+- Never blame the client.
+- Always include what we're doing about it — the client should never feel they need to act (unless call-to-decision).
+- Keep every answer under 80 words. Be direct — no hedging ("we think", "it seems", "possibly"). If uncertain, say "we're investigating."
+
 Output: a single string of plain prose. No JSON, no markdown, no preamble like "Based on the data".`;
 }
 

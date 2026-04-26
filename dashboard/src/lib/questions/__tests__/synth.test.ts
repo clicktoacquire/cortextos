@@ -80,4 +80,17 @@ describe('SYSTEM_PROMPT', () => {
       expect(SYSTEM_PROMPT).toContain(`${id}:`);
     }
   });
+
+  it('includes all 5 answer tone templates', async () => {
+    const { SYSTEM_PROMPT } = await import('../synth');
+    for (const template of [
+      'WHY-CHANGED',
+      'WHAT-TO-DO',
+      'CELEBRATE-WIN',
+      'EXPLAIN-DIP',
+      'CALL-TO-DECISION',
+    ]) {
+      expect(SYSTEM_PROMPT).toContain(template);
+    }
+  });
 });
