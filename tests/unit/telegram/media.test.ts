@@ -161,7 +161,7 @@ describe('processMediaMessage', () => {
 
   it('processes voice messages', async () => {
     const msg = makeMsg({
-      voice: { file_id: 'voice1', duration: 5 },
+      voice: { file_id: 'voice1', file_unique_id: 'vuq1', duration: 5 },
     });
     const api = createMockApi('voice/file_123.ogg');
     const result = await processMediaMessage(msg, api, downloadDir);
@@ -170,7 +170,7 @@ describe('processMediaMessage', () => {
     expect(result!.type).toBe('voice');
     expect(result!.text).toBe('');
     expect(result!.duration).toBe(5);
-    expect(result!.file_path).toMatch(/voice_\d+\.ogg$/);
+    expect(result!.file_path).toMatch(/voice_\d+_vuq1\.ogg$/);
     expect(existsSync(result!.file_path!)).toBe(true);
   });
 
@@ -202,7 +202,7 @@ describe('processMediaMessage', () => {
 
   it('processes video_note messages', async () => {
     const msg = makeMsg({
-      video_note: { file_id: 'vnote1', duration: 10 },
+      video_note: { file_id: 'vnote1', file_unique_id: 'vnuq1', duration: 10 },
     });
     const api = createMockApi('video_notes/file_123.mp4');
     const result = await processMediaMessage(msg, api, downloadDir);
@@ -211,7 +211,7 @@ describe('processMediaMessage', () => {
     expect(result!.type).toBe('video_note');
     expect(result!.text).toBe('');
     expect(result!.duration).toBe(10);
-    expect(result!.file_path).toMatch(/videonote_\d+\.mp4$/);
+    expect(result!.file_path).toMatch(/videonote_\d+_vnuq1\.mp4$/);
     expect(existsSync(result!.file_path!)).toBe(true);
   });
 
