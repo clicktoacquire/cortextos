@@ -188,6 +188,13 @@ Sessions auto-restart with `--continue` every ~71 hours. On context exhaustion, 
 
 ---
 
+## Local CLIs (~/.local/bin)
+
+- **rtk** — token-optimizing proxy for noisy shell output. A global PreToolUse hook auto-rewrites `git/gh/npm/jest/tsc/grep/find/diff/log/...` → `rtk <cmd>`. You don't need to think about it. Direct calls: `rtk gain` (savings report), `rtk discover` (find missed opportunities).
+- **snapcli** — Click dispatcher that mounts adapter packages registered under entry-point group `snapcli.platforms`. Pitch: capture a Chrome session once, call any website as a plain CLI without Playwright. Bare core has no built-in subcommands; reach for it when you need to wrap a web UI as a scriptable adapter for the fleet.
+
+---
+
 ## Knowledge Base (RAG)
 
 Query and ingest org documents using natural language. See `.claude/skills/knowledge-base/SKILL.md` for full reference.
