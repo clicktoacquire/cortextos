@@ -1,5 +1,4 @@
-import { appendFileSync, existsSync, readdirSync, readFileSync, statSync, unlinkSync, watch, writeFileSync } from 'fs';
-import type { FSWatcher } from 'fs';
+import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join, sep } from 'path';
 import { homedir } from 'os';
 import type { AgentConfig, AgentStatus, CtxEnv } from '../types/index.js';
@@ -9,7 +8,6 @@ import { MessageDedup, injectMessage } from '../pty/inject.js';
 import { ensureDir } from '../utils/atomic.js';
 import { writeCortextosEnv } from '../utils/env.js';
 import { getOverdueReminders } from '../bus/reminders.js';
-import { readCronState, parseDurationMs, cronExpressionMinIntervalMs } from '../bus/cron-state.js';
 import { resolvePaths } from '../utils/paths.js';
 
 type LogFn = (msg: string) => void;
@@ -45,16 +43,12 @@ export class AgentProcess {
   // from an old PTY can race past stopRequested and trigger crash recovery on
   // the new agent.
   private lifecycleGeneration: number = 0;
-  // Guard: only one cron verification waiter in-flight per agent at a time.
-  // Rapid --continue restarts must not stack duplicate waiters. (Issue #182)
-  private cronVerificationPending: boolean = false;
   // BUG-011 fix: stop() awaits this promise (resolved by the onExit handler in start())
   // to guarantee the PTY exit has fired before stopping=false is reset. Without
   // this, the exit handler can fire after stopping=false and trigger spurious
   // crash recovery for an agent we just stopped intentionally.
   private exitPromise: Promise<void> | null = null;
   private resolveExit: (() => void) | null = null;
-  private forceFreshWatcher: FSWatcher | null = null;
   private dedup: MessageDedup;
   private log: LogFn;
   private onStatusChange: ((status: AgentStatus) => void) | null = null;
@@ -148,9 +142,8 @@ export class AgentProcess {
       this.sessionStart = new Date();
       this.log(`Running (pid: ${this.pty.getPid()})`);
 
-      // Start session timer and force-fresh watcher
+      // Start session timer
       this.startSessionTimer();
-      this.startForceFreshWatcher();
 
       this.notifyStatusChange();
     } catch (err) {
@@ -172,7 +165,6 @@ export class AgentProcess {
     this.stopRequested = true;
     this.log('Stopping...');
     this.clearSessionTimer();
-    this.clearForceFreshWatcher();
 
     // Capture and null out pty BEFORE any awaits so handleExit() during graceful
     // shutdown doesn't race with us and trigger crash recovery or a double-kill.
@@ -341,7 +333,6 @@ export class AgentProcess {
   private handleExit(exitCode: number): void {
     this.pty = null;
     this.clearSessionTimer();
-    this.clearForceFreshWatcher();
 
     // When the cortextos daemon is shut down by PM2, SIGTERM propagates to
     // the whole process group and reaches each PTY's Claude Code child
@@ -425,7 +416,10 @@ export class AgentProcess {
     // Check for force-fresh marker
     const forceFreshPath = join(this.env.ctxRoot, 'state', this.name, '.force-fresh');
     if (existsSync(forceFreshPath)) {
-      try { unlinkSync(forceFreshPath); } catch { /* ignore */ }
+      try {
+        const { unlinkSync } = require('fs');
+        unlinkSync(forceFreshPath);
+      } catch { /* ignore */ }
       return false;
     }
 
@@ -444,8 +438,8 @@ export class AgentProcess {
     );
 
     try {
-      const files = readdirSync(convDir);
-      return files.some((f) => f.endsWith('.jsonl'));
+      const files = require('fs').readdirSync(convDir);
+      return files.some((f: string) => f.endsWith('.jsonl'));
     } catch {
       return false;
     }
@@ -460,7 +454,10 @@ export class AgentProcess {
     // If agent has a heartbeat but no .onboarded marker, they completed onboarding but
     // forgot to write the marker. Auto-write it so they don't re-onboard next restart.
     if (!existsSync(onboardedPath) && existsSync(heartbeatPath)) {
-      try { writeFileSync(onboardedPath, '', 'utf-8'); } catch { /* ignore */ }
+      try {
+        const { writeFileSync } = require('fs');
+        writeFileSync(onboardedPath, '', 'utf-8');
+      } catch { /* ignore */ }
     }
 
     if (!existsSync(onboardedPath) && existsSync(onboardingPath)) {
@@ -476,19 +473,19 @@ export class AgentProcess {
     // before cron restoration, before heartbeat, before anything else. Placing this instruction
     // immediately after the handoffBlock in the prompt ensures it is not buried.
     const handoffUxOverride = isHandoffRestart
-      ? ' HANDOFF UX: This is a context handoff restart — your memory is intact via the handoff doc. CRITICAL: After reading the handoff document, your VERY FIRST tool call MUST be a Bash call running: cortextos bus send-telegram $CTX_TELEGRAM_CHAT_ID \'back — [what you were just working on]\' — replace the brackets with one brief plain-English sentence about your current state. Do this BEFORE restoring crons, BEFORE running heartbeat, BEFORE any other tool call. No cron IDs, no status report, no cold-boot phrasing. Do NOT send "Booting up... one moment" (skip AGENTS.md step 1 entirely).'
+      ? ' HANDOFF UX: This is a context handoff restart — your memory is intact via the handoff doc. CRITICAL: After reading the handoff document, your VERY FIRST tool call MUST be a Bash call running: cortextos bus send-telegram $CTX_TELEGRAM_CHAT_ID \'back — [what you were just working on]\' — replace the brackets with one brief plain-English sentence about your current state. Do this BEFORE running heartbeat, BEFORE any other tool call. No cron IDs, no status report, no cold-boot phrasing. Do NOT send "Booting up... one moment" (skip AGENTS.md step 1 entirely).'
       : '';
     const onlineMessage = isHandoffRestart
       ? ''
-      : ' After setting up crons, send a Telegram message to the user saying you are back online.';
-    return `You are starting a new session. Current UTC time: ${nowUtc}. Read AGENTS.md and all bootstrap files listed there. Then restore your crons from config.json: for each entry with type "recurring" (or no type field), call /loop {interval} {prompt}; for each entry with type "once", compare fire_at against the current UTC time above — if fire_at is still in the future recreate the CronCreate, if fire_at is in the past delete that entry from config.json. CRITICAL DEDUP: Always call CronList BEFORE creating any cron. For each config.json entry, search the CronList output for its prompt text — if the prompt already appears, SKIP that cron entirely. Only call /loop or CronCreate for entries whose prompt text is NOT already listed. This prevents rapid --continue restarts from accumulating duplicate schedules.${reminderBlock}${deliverablesBlock}${handoffBlock}${handoffUxOverride}${onlineMessage}${onboardingAppend}`;
+      : ' Send a Telegram message to the user saying you are back online.';
+    return `You are starting a new session. Current UTC time: ${nowUtc}. Read AGENTS.md and all bootstrap files listed there. External crons are auto-loaded by the daemon — do NOT call CronCreate or CronList for cron restoration.${reminderBlock}${deliverablesBlock}${handoffBlock}${handoffUxOverride}${onlineMessage}${onboardingAppend}`;
   }
 
   private buildContinuePrompt(): string {
     const nowUtc = new Date().toISOString();
     const reminderBlock = this.buildReminderBlock();
     const deliverablesBlock = this.buildDeliverablesBlock();
-    return `SESSION CONTINUATION: Your CLI process was restarted with --continue to reload configs. Current UTC time: ${nowUtc}. Your full conversation history is preserved. Re-read AGENTS.md and ALL bootstrap files listed there. Restore your crons from config.json ONLY if missing. CRITICAL DEDUP: Call CronList FIRST. For each config.json entry, search the CronList output for its prompt text — if the prompt already appears, SKIP that cron. Only call /loop (recurring) or CronCreate (once, if fire_at is in the future) for entries whose prompt text is NOT already listed. Rapid --continue restarts must not accumulate duplicates.${reminderBlock}${deliverablesBlock} Check inbox. Resume normal operations. After restoring crons and checking inbox, send a Telegram message to the user saying you are back online.`;
+    return `SESSION CONTINUATION: Your CLI process was restarted with --continue to reload configs. Current UTC time: ${nowUtc}. Your full conversation history is preserved. Re-read AGENTS.md and ALL bootstrap files listed there. External crons are auto-loaded by the daemon — do NOT call CronCreate or CronList for cron restoration.${reminderBlock}${deliverablesBlock} Check inbox. Resume normal operations. After checking inbox, send a Telegram message to the user saying you are back online.`;
   }
 
   /**
@@ -541,6 +538,7 @@ export class AgentProcess {
     const markerPath = join(this.env.ctxRoot, 'state', this.name, '.handoff-doc-path');
     if (!existsSync(markerPath)) return '';
     try {
+      const { unlinkSync } = require('fs');
       const docPath = readFileSync(markerPath, 'utf-8').trim();
       unlinkSync(markerPath);
       if (!docPath || !existsSync(docPath)) return '';
@@ -552,6 +550,11 @@ export class AgentProcess {
 
   private startSessionTimer(): void {
     const DEFAULT_MAX_SESSION_S = 255600;
+    // Node setTimeout uses int32 ms internally. Values > 2^31-1 (~24.8d) silently
+    // coerce to 1ms, which combined with the BUG-048 reschedule loop below causes
+    // an infinite tight loop. Clamp at the call site so any future misconfigured
+    // max_session_seconds (e.g. a stray 3600000s = 1000h) cannot wedge the daemon.
+    const MAX_SETTIMEOUT_MS = 2_147_483_647;
     const startedAt = Date.now();
     const initialMs = (this.config.max_session_seconds || DEFAULT_MAX_SESSION_S) * 1000;
 
@@ -583,7 +586,7 @@ export class AgentProcess {
 
         this.log(`Session timer fired after ${Math.round(elapsedMs / 1000)}s (limit: ${currentMaxMs / 1000}s)`);
         this.sessionRefresh().catch(err => this.log(`Session refresh failed: ${err}`));
-      }, delayMs);
+      }, Math.min(delayMs, MAX_SETTIMEOUT_MS));
     };
 
     scheduleCheck(initialMs);
@@ -593,44 +596,6 @@ export class AgentProcess {
     if (this.sessionTimer) {
       clearTimeout(this.sessionTimer);
       this.sessionTimer = null;
-    }
-  }
-
-  // Watch the agent state dir for .force-fresh to appear mid-session.
-  // When detected, give Claude Code a 2s grace period to finish its current
-  // turn, then send SIGTERM so the session exits. shouldContinue() deletes
-  // the marker on the next start() and returns false (fresh mode).
-  private startForceFreshWatcher(): void {
-    const stateDir = join(this.env.ctxRoot, 'state', this.name);
-    const forceFreshFile = '.force-fresh';
-
-    try {
-      this.forceFreshWatcher = watch(stateDir, (eventType, filename) => {
-        if (filename !== forceFreshFile) return;
-        if (!existsSync(join(stateDir, forceFreshFile))) return;
-        this.log('.force-fresh detected mid-session — sending SIGTERM after 2s grace period');
-        this.clearForceFreshWatcher();
-        setTimeout(() => {
-          const pid = this.pty?.getPid();
-          if (pid) {
-            try {
-              process.kill(pid, 'SIGTERM');
-            } catch (err) {
-              this.log(`SIGTERM to pid ${pid} failed: ${err}`);
-            }
-          }
-        }, 2000);
-      });
-      this.forceFreshWatcher.on('error', () => this.clearForceFreshWatcher());
-    } catch {
-      // State dir may not exist yet; watcher is best-effort
-    }
-  }
-
-  private clearForceFreshWatcher(): void {
-    if (this.forceFreshWatcher) {
-      try { this.forceFreshWatcher.close(); } catch { /* ignore */ }
-      this.forceFreshWatcher = null;
     }
   }
 
@@ -704,223 +669,6 @@ export class AgentProcess {
   private notifyStatusChange(): void {
     if (this.onStatusChange) {
       this.onStatusChange(this.getStatus());
-    }
-  }
-
-  /**
-   * Schedule a background cron verification check.
-   *
-   * Waits for the agent to finish its startup sequence (detected via the
-   * last_idle.flag written by the Stop hook after the agent's first turn
-   * completes), then injects a lightweight prompt asking the agent to
-   * verify its crons match config.json and restore any that are missing.
-   *
-   * Safe for both fresh starts and --continue restarts: the idle-wait
-   * ensures we never inject mid-conversation.
-   *
-   * Fire-and-forget: errors are logged but never propagated.
-   */
-  scheduleCronVerification(): void {
-    // Hermes owns its cron scheduler natively — no CronList / /loop needed.
-    // Verification via injected prompts would interfere with Hermes's own cron system.
-    if (this.config.runtime === 'hermes') return;
-
-    const crons = this.config.crons;
-    if (!crons || crons.length === 0) return;
-
-    const recurringNames = crons
-      .filter(c => c.type !== 'once' && c.type !== 'disabled')
-      .map(c => c.name);
-    if (recurringNames.length === 0) return;
-
-    // Dedup: only one waiter in-flight per agent. Rapid --continue restarts
-    // would otherwise stack multiple concurrent waiters. (Issue #182)
-    if (this.cronVerificationPending) {
-      this.log('Cron verification already pending — skipping duplicate');
-      return;
-    }
-
-    const generation = this.lifecycleGeneration;
-
-    // Run in background — don't block startup
-    this.cronVerificationPending = true;
-    this.verifyCronsAfterIdle(recurringNames, generation)
-      .catch(err => { this.log(`Cron verification failed (non-fatal): ${err}`); })
-      .finally(() => { this.cronVerificationPending = false; });
-  }
-
-  /**
-   * Starts a background gap-detection loop for recurring interval-based crons.
-   * Reads cron-state.json every 10 minutes; injects a nudge if any cron has
-   * been silent for >2x its expected interval.
-   *
-   * Fire-and-forget: errors are logged but never propagated.
-   */
-  scheduleGapDetection(): void {
-    const crons = this.config.crons;
-    if (!crons || crons.length === 0) return;
-
-    // Monitor recurring crons with either a parseable interval or a cron expression
-    const monitorable = crons.filter(c => {
-      if (c.type === 'once' || c.type === 'disabled') return false;
-      if (c.interval && !isNaN(parseDurationMs(c.interval))) return true;
-      if (c.cron) return true;
-      return false;
-    });
-    if (monitorable.length === 0) return;
-
-    const generation = this.lifecycleGeneration;
-    const loopStartedAt = Date.now();
-
-    this.runGapDetectionLoop(monitorable, generation, loopStartedAt).catch(err => {
-      this.log(`Cron gap detection failed (non-fatal): ${err}`);
-    });
-  }
-
-  private async runGapDetectionLoop(
-    crons: Array<{ name: string; interval?: string; cron?: string }>,
-    generation: number,
-    loopStartedAt: number,
-  ): Promise<void> {
-    const GAP_POLL_MS = 10 * 60 * 1000;       // poll every 10 minutes
-    const GAP_MULTIPLIER = 3.0;                // nudge when gap > 3x expected interval (was 2.0; bumped to reduce
-                                                // false-positive nudge floods after --continue restarts when crons
-                                                // haven't yet fired post-restart but the agent IS healthy)
-    const NUDGE_BURST_LIMIT = 2;               // wave dampener: if N+ nudges fire within BURST_WINDOW_MS, skip the rest
-    const BURST_WINDOW_MS = 30 * 60 * 1000;    // 30-min sliding window for burst detection
-    const INITIAL_WAIT_MS = 15 * 60 * 1000;    // 15 min before first check (was 10; gives agent room to settle post-boot)
-
-    const stateDir = join(this.env.ctxRoot, 'state', this.name);
-    const recentNudges: number[] = [];          // timestamps of nudges in current burst window
-
-    // Initial wait — give the agent time to boot, register crons, and process startup
-    await sleep(INITIAL_WAIT_MS);
-
-    while (true) {
-      if (generation !== this.lifecycleGeneration || this.status !== 'running') return;
-
-      const now = Date.now();
-      const state = readCronState(stateDir);
-
-      for (const cronDef of crons) {
-        const intervalMs = cronDef.interval
-          ? parseDurationMs(cronDef.interval)
-          : cronExpressionMinIntervalMs(cronDef.cron!);
-
-        const record = state.crons.find(r => r.name === cronDef.name);
-        let lastFireMs: number;
-        if (!record) {
-          lastFireMs = loopStartedAt;
-        } else {
-          lastFireMs = Date.parse(record.last_fire);
-          if (isNaN(lastFireMs)) continue;
-          // If the recorded fire time pre-dates this daemon start (e.g. stale timestamp
-          // from before a restart storm), clamp to loopStartedAt so we don't fire false
-          // gap nudges for crons that simply haven't had a chance to run since the restart.
-          lastFireMs = Math.max(lastFireMs, loopStartedAt);
-        }
-
-        const gapMs = now - lastFireMs;
-        const threshold = intervalMs * GAP_MULTIPLIER;
-
-        if (gapMs > threshold) {
-          // Wave dampener: prune nudges older than the burst window, then check the limit.
-          // After --continue restarts and pauses, multiple stale crons can simultaneously
-          // exceed threshold, producing nudge floods that thrash agent context. (#182, #270)
-          const burstCutoff = now - BURST_WINDOW_MS;
-          while (recentNudges.length && recentNudges[0]! < burstCutoff) recentNudges.shift();
-          if (recentNudges.length >= NUDGE_BURST_LIMIT) {
-            this.log(`Gap nudge SKIPPED (burst limit ${NUDGE_BURST_LIMIT} reached in ${BURST_WINDOW_MS / 60_000}min): ${cronDef.name}`);
-            continue;
-          }
-
-          const gapMin = Math.round(gapMs / 60_000);
-          const expectedMin = Math.round(intervalMs / 60_000);
-          const restoreHint = cronDef.interval
-            ? `If missing, restore it from config.json: /loop ${cronDef.interval} <cron prompt>.`
-            : `If missing, restore it from config.json using the cron expression in your config.`;
-          const nudge = `[SYSTEM] Cron gap detected for "${cronDef.name}": last fired ${gapMin} minutes ago (expected every ${expectedMin} minutes). Run CronList to verify the cron is still active. ${restoreHint}`;
-
-          this.log(`Gap nudge: ${cronDef.name} silent ${gapMin}min (threshold: ${Math.round(threshold / 60_000)}min)`);
-          if (this.pty && this.status === 'running') {
-            injectMessage((data) => this.pty?.write(data), nudge);
-            recentNudges.push(now);
-            // Stagger: wait between nudges so the agent can process each one
-            // before the next arrives. Without this, N simultaneous stale crons
-            // fire N back-to-back injections, spiking context and triggering
-            // ctx-watchdog restarts. (Issue #182)
-            await sleep(30_000);
-          }
-        }
-      }
-
-      await sleep(GAP_POLL_MS);
-    }
-  }
-
-  private async verifyCronsAfterIdle(
-    expectedCrons: string[],
-    generation: number,
-  ): Promise<void> {
-    const stateDir = join(this.env.ctxRoot, 'state', this.name);
-    const flagPath = join(stateDir, 'last_idle.flag');
-
-    // Record the idle flag timestamp at boot so we can detect the NEXT idle
-    // (i.e. after the agent has finished processing its startup prompt).
-    let bootIdleTs = 0;
-    try {
-      if (existsSync(flagPath)) {
-        bootIdleTs = parseInt(readFileSync(flagPath, 'utf-8').trim(), 10);
-      }
-    } catch { /* ignore */ }
-
-    // Wait up to 30 minutes for the agent to finish its startup turn.
-    // 10 min was too short — agents busy processing gap nudge bursts would
-    // never go idle in time and the verification would silently drop. (Issue #182)
-    const maxWaitMs = 30 * 60 * 1000;
-    const pollMs = 15_000;
-    const startTime = Date.now();
-    let foundIdle = false;
-
-    while (Date.now() - startTime < maxWaitMs) {
-      // Bail if this lifecycle is stale (agent restarted or stopped)
-      if (generation !== this.lifecycleGeneration || this.status !== 'running') {
-        return;
-      }
-
-      await sleep(pollMs);
-
-      try {
-        if (existsSync(flagPath)) {
-          const currentIdleTs = parseInt(readFileSync(flagPath, 'utf-8').trim(), 10);
-          if (currentIdleTs > bootIdleTs) {
-            // Agent has gone idle after boot — safe to inject
-            foundIdle = true;
-            break;
-          }
-        }
-      } catch { /* ignore read errors, keep polling */ }
-    }
-
-    // If the loop timed out without detecting an idle transition, do not inject:
-    // the agent never finished its startup turn (e.g. stuck on a very long boot).
-    if (!foundIdle) {
-      this.log('Cron verification: timed out waiting for idle flag, skipping injection');
-      return;
-    }
-
-    // Final stale check
-    if (generation !== this.lifecycleGeneration || this.status !== 'running') {
-      return;
-    }
-
-    // Inject the verification prompt
-    const cronList = expectedCrons.join(', ');
-    const verifyPrompt = `[SYSTEM] Cron verification: your config.json defines these recurring crons: ${cronList}. Run CronList now. If any are missing, restore them from config.json using /loop. This is an automated safety check.`;
-
-    this.log(`Injecting cron verification (expecting: ${cronList})`);
-    if (this.pty) {
-      injectMessage((data) => this.pty?.write(data), verifyPrompt);
     }
   }
 }
