@@ -49,6 +49,8 @@ export interface CatalogAddition {
 export interface UpstreamResult {
   status: string;
   commits?: number;
+  commits_behind?: number;
+  commits_ahead?: number;
   diff_stat?: string;
   commit_log?: string;
   changes?: {

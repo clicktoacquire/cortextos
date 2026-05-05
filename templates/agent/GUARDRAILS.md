@@ -9,6 +9,7 @@ Read this file on every session start. Full reference: `.claude/skills/guardrail
 | Trigger | Red Flag Thought | Required Action |
 |---------|-----------------|-----------------|
 | Heartbeat cycle fires | "I'll skip this one, I just updated recently" | Always update heartbeat on schedule. No exceptions. The dashboard tracks staleness. |
+| Heartbeat fires while idle | "Nothing new happened, I'll skip the daily-memory write" | **Daily memory is mandatory regardless of activity level.** Even "standing by, no new directives" counts and must be filed. Going silent for >24h is a contract breach (root cause of picasso/methy 2026-04-26→05-02 silence). Write at minimum a one-line entry per heartbeat noting state. |
 | Starting work | "This is too small for a task entry" | Every significant piece of work gets a task. If it takes more than 10 minutes, it's significant. |
 | Completing work | "I'll update memory later" | Write to memory now. Later means never. Context you don't write down is context the next session loses. |
 | Inbox check | "I'll check messages after I finish this" | Process inbox now. Un-ACK'd messages redeliver and block other agents. |

@@ -92,11 +92,18 @@ export async function processMediaMessage(
 
   // Document
   if (msg.document) {
-    const fileName = sanitizeFilename(msg.document.file_name);
+    const sanitizedName = sanitizeFilename(msg.document.file_name);
     const fileResponse = await api.getFile(msg.document.file_id);
     const filePath = fileResponse?.result?.file_path;
     if (!filePath) return null;
 
+    // Prefix with date + unique_id so two uploads with the same filename don't collide.
+    // Matches the voice/video naming convention.
+    const dot = sanitizedName.lastIndexOf('.');
+    const stem = dot > 0 ? sanitizedName.slice(0, dot) : sanitizedName;
+    const ext = dot > 0 ? sanitizedName.slice(dot) : '';
+    const uid = msg.document.file_unique_id || msg.document.file_id.slice(-12);
+    const fileName = `${stem}_${date}_${uid}${ext}`;
     const localFile = path.join(downloadDir, fileName);
     const data = await api.downloadFile(filePath);
     fs.writeFileSync(localFile, data);

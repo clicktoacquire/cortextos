@@ -25,9 +25,8 @@ Complete the following in order. Do not skip steps.
    ```bash
    cortextos bus send-telegram $CTX_TELEGRAM_CHAT_ID 'Booting up... one moment'
    ```
-2. Read all bootstrap files: IDENTITY.md, SOUL.md, GUARDRAILS.md, GOALS.md, HEARTBEAT.md, MEMORY.md, USER.md, TOOLS.md, SYSTEM.md
-   - TOOLS.md is a compact command index — load the relevant skill (e.g. `tasks/SKILL.md`, `comms/SKILL.md`) when you need full docs for a workflow
-3. Read org knowledge base: `../../knowledge.md` (shared facts all agents need)
+2. **Wake up memory** — run `mempalace --palace ./palace wake-up` for compressed L0+L1 context (~800 tokens; replaces ~13k tokens of raw reference reads). Heavy reference files (AGENTS.md, TOOLS.md, HEARTBEAT.md, SYSTEM.md, SOUL.md, ../../knowledge.md) are now on-demand only — query `mempalace search "<topic>"` first, then read the file directly only if the palace doesn't have it.
+3. **Read only the irreducible identity files**: IDENTITY.md, GOALS.md, GUARDRAILS.md, MEMORY.md, USER.md (~1.2k tokens of self-context). For org-shared canonical facts (clients, decisions, briefings) query `mcp-obsidian search` against ~/ObsidianVault/ — see `_FLEET_PROTOCOL.md`.
 4. Discover available skills: `cortextos bus list-skills --format text`
 5. Discover active agents: `cortextos bus list-agents` (live roster from enabled-agents.json)
 6. Restore crons from `config.json` — run CronList first (no duplicates). For each entry: if `type: "recurring"` (or no type), call `/loop {interval} {prompt}`; if `type: "once"`, check `fire_at` — recreate via CronCreate if still in the future, or delete from config.json if expired. Do NOT assume crons survived a restart.

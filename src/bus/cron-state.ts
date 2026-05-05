@@ -15,7 +15,7 @@
  * Storage: state/<agent>/cron-state.json (same dir as pending-reminders.json).
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { ensureDir } from '../utils/atomic.js';
 
@@ -73,7 +73,12 @@ export function updateCronFire(
   }
 
   state.updated_at = now;
-  writeFileSync(cronStatePath(stateDir), JSON.stringify(state, null, 2) + '\n', 'utf-8');
+  // Atomic write: tempfile + rename. Without this, two agents calling
+  // update-cron-fire simultaneously can read-modify-write and lose updates.
+  const target = cronStatePath(stateDir);
+  const tmp = `${target}.tmp.${process.pid}.${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n', 'utf-8');
+  renameSync(tmp, target);
 }
 
 /**
@@ -105,13 +110,20 @@ export function cronExpressionMinIntervalMs(expr: string): number {
   if (parts.length !== 5) return FALLBACK_MS;
   const [minute, hour] = parts;
 
-  // Every N minutes: */N * * * *
+  // Every N minutes: */N * * * * — guard against `*/0` which would
+  // produce a 0ms interval and trigger infinite gap nudges.
   const everyMin = /^\*\/(\d+)$/.exec(minute);
-  if (everyMin && hour === '*') return parseInt(everyMin[1], 10) * 60_000;
+  if (everyMin && hour === '*') {
+    const n = parseInt(everyMin[1], 10);
+    return n > 0 ? n * 60_000 : FALLBACK_MS;
+  }
 
   // Every N hours: <fixed-minute> */N * * *
   const everyHour = /^\*\/(\d+)$/.exec(hour);
-  if (everyHour) return parseInt(everyHour[1], 10) * 3_600_000;
+  if (everyHour) {
+    const n = parseInt(everyHour[1], 10);
+    return n > 0 ? n * 3_600_000 : FALLBACK_MS;
+  }
 
   // Fixed hour — fires daily (or on restricted days; 24h is the minimum gap)
   if (/^\d+$/.test(hour)) return 24 * 3_600_000;

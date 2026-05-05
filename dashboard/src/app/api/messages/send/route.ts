@@ -50,9 +50,17 @@ export async function POST(request: NextRequest) {
 
   // Sender identity: use the dashboard admin username so chat bar messages
   // land in the same channel as Telegram messages for the same user.
+  // Fail loud if unset — silent fallback to "user" corrupts the audit trail
+  // and routes chat-bar messages into a phantom channel.
+  if (!process.env.ADMIN_USERNAME) {
+    return Response.json(
+      { error: 'ADMIN_USERNAME not configured. Set it in dashboard.env to identify the dashboard admin.' },
+      { status: 500 },
+    );
+  }
   const epochMs = Date.now();
   const rand = Math.random().toString(36).slice(2, 7);
-  const from = (process.env.ADMIN_USERNAME ?? 'user').toLowerCase();
+  const from = process.env.ADMIN_USERNAME.toLowerCase();
   const messageId = `${epochMs}-${from}-${rand}`;
 
   // Priority 2 = normal (matches bus/send-message.sh mapping)

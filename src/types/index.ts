@@ -296,28 +296,33 @@ export interface TelegramPhotoSize {
 
 export interface TelegramDocument {
   file_id: string;
+  file_unique_id?: string;
   file_name?: string;
 }
 
 export interface TelegramVoice {
   file_id: string;
+  file_unique_id?: string;
   duration: number;
 }
 
 export interface TelegramAudio {
   file_id: string;
+  file_unique_id?: string;
   duration: number;
   file_name?: string;
 }
 
 export interface TelegramVideo {
   file_id: string;
+  file_unique_id?: string;
   duration: number;
   file_name?: string;
 }
 
 export interface TelegramVideoNote {
   file_id: string;
+  file_unique_id?: string;
   duration: number;
 }
 

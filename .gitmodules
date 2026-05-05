@@ -1,0 +1,3 @@
+[submodule "agency-os"]
+	path = agency-os
+	url = https://github.com/clicktoacquire/agency-os.git

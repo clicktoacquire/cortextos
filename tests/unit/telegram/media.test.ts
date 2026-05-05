@@ -117,7 +117,8 @@ describe('processMediaMessage', () => {
 
     expect(result).not.toBeNull();
     expect(result!.type).toBe('document');
-    expect(result!.file_name).toBe('report.pdf');
+    // Documents are date+uid prefixed to prevent same-name collisions
+    expect(result!.file_name).toMatch(/^report_.+\.pdf$/);
     expect(result!.text).toBe('my report');
     expect(existsSync(result!.file_path!)).toBe(true);
   });
@@ -130,7 +131,10 @@ describe('processMediaMessage', () => {
     const result = await processMediaMessage(msg, api, downloadDir);
 
     expect(result).not.toBeNull();
-    expect(result!.file_name).toBe('passwd');
+    // Sanitize strips the path; date+uid suffix makes it collision-safe
+    expect(result!.file_name).toMatch(/^passwd_.+/);
+    expect(result!.file_name).not.toContain('..');
+    expect(result!.file_name).not.toContain('/');
   });
 
   it('processes audio messages with filename', async () => {

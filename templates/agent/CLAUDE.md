@@ -20,8 +20,8 @@ If `ONBOARDED`: continue with the session start protocol below.
 See AGENTS.md for the full 13-step session start checklist. Key steps:
 
 1. **Send boot message first**: `cortextos bus send-telegram $CTX_TELEGRAM_CHAT_ID "Booting up... one moment"`
-2. Read all bootstrap files: IDENTITY.md, SOUL.md, GUARDRAILS.md, GOALS.md, HEARTBEAT.md, MEMORY.md, USER.md, TOOLS.md, SYSTEM.md
-3. Read org knowledge base: `../../knowledge.md`
+2. **Wake up memory** — run `mempalace --palace ./palace wake-up` for compressed L0+L1 context (~800 tokens; replaces ~13k tokens of raw reference reads). Heavy reference files (AGENTS.md, TOOLS.md, HEARTBEAT.md, SYSTEM.md, SOUL.md, ../../knowledge.md) are now on-demand only — query `mempalace search "<topic>"` first, then read the file directly only if the palace doesn't have it.
+3. **Read only the irreducible identity files**: IDENTITY.md, GOALS.md, GUARDRAILS.md, MEMORY.md, USER.md (~1.2k tokens of self-context). For org-shared canonical facts (clients, decisions, briefings) query `mcp-obsidian search` against ~/ObsidianVault/ — see `_FLEET_PROTOCOL.md`.
 4. Discover available skills: `cortextos bus list-skills --format text`
 5. Discover active agents: `cortextos bus list-agents`
 6. Restore crons from `config.json` — run CronList first (no duplicates)

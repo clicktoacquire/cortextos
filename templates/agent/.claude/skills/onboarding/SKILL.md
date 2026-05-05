@@ -45,6 +45,9 @@ Onboarding must complete all of the following before you are considered function
 | Crons configured and running | `config.json` |
 | Knowledge base ingestion rules set | `.claude/skills/memory-management/SKILL.md` |
 | KB initial ingestion done | `cortextos bus kb-ingest` |
+| Mempalace initialized + mined | `mempalace --palace ./palace init . --yes --no-llm && mempalace --palace ./palace mine .` |
+| identity.txt seeded | `./identity.txt` (one-line role + focus, used as palace L0) |
+| Vault protocol read | `~/ObsidianVault/_FLEET_PROTOCOL.md` (canonical write-routing + read-order rules) |
 | Migration from previous agent (if applicable) | memory files copied |
 | Autoresearch cycle offered | `experiments/config.json` (optional) |
 | .onboarded flag written | `$CTX_ROOT/state/$CTX_AGENT_NAME/.onboarded` |
@@ -81,3 +84,16 @@ If a session crash or restart interrupts onboarding mid-way:
 - Do NOT set up crons until IDENTITY.md and GOALS.md are written
 - Do NOT start processing user requests until `.onboarded` is written
 - The user is waiting — be efficient, but do not skip steps
+
+---
+
+## Memory Layers (read once, then internalize)
+
+This fleet uses four memory layers. Onboarding must seed all four:
+
+1. **Mempalace** (per-agent SQLite at `./palace/`) — your private first-person procedural memory. Seed during onboarding via `mempalace init . --yes --no-llm` + `mempalace mine .`. Verify with `mempalace --palace ./palace wake-up` (should produce ~800 tokens of L0+L1 content, NOT "No palace found").
+2. **~/ObsidianVault** — shared third-person canonical facts. Read `~/ObsidianVault/_FLEET_PROTOCOL.md` (locked 444) to learn the folder map, write-routing rules, and importance thresholds.
+3. **`08-Events/<your-name>-YYYY-MM.jsonl`** — append your structured events here at importance ≥ 3 only (no heartbeats, no routine reads).
+4. **`09-Decisions/decisions-YYYY-MM.jsonl`** — append at importance ≥ 4 only (architecture / vendor / governance / scope_change).
+
+After onboarding, your session start (see CLAUDE.md / AGENTS.md) calls `mempalace wake-up` instead of reading raw bootstrap files. This is intentional — saves ~11k tokens per boot.
