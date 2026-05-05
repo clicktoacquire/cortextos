@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { readdirSync, readFileSync, existsSync, renameSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { execFile } from 'child_process';
 import { join } from 'path';
 import { createHash } from 'crypto';
@@ -970,10 +970,13 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     if (effectivePct >= handoff && this.ctxHandoffFiredAt === 0) {
       this.ctxHandoffFiredAt = now;
       this.ctxHandoffDeadlineAt = now + 5 * 60_000; // 5min grace for agent to cooperate
-      // Reset context_status.json so the new session doesn't re-trigger immediately
+      // Reset context_status.json so the new session doesn't re-trigger immediately.
+      // Atomic write (tempfile + rename) so a concurrent reader can't see a partial JSON.
       const statusPath = join(this.paths.stateDir, 'context_status.json');
       try {
-        writeFileSync(statusPath, JSON.stringify({ used_percentage: 0, exceeds_200k_tokens: false, written_at: new Date().toISOString() }));
+        const tmp = `${statusPath}.tmp.${process.pid}`;
+        writeFileSync(tmp, JSON.stringify({ used_percentage: 0, exceeds_200k_tokens: false, written_at: new Date().toISOString() }));
+        renameSync(tmp, statusPath);
       } catch { /* non-fatal */ }
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + 'Z';
       const handoffPrompt = `[CONTEXT HANDOFF REQUIRED] Context is at ${Math.round(effectivePct)}%. Write a handoff document to memory/handoffs/handoff-${ts}.md with these sections: ## Current Tasks, ## Next Actions, ## Active Crons, ## Key Context, ## Files Modified This Session. Then run: cortextos bus hard-restart --reason "context handoff at ${Math.round(effectivePct)}%" --handoff-doc <absolute path to the handoff doc you just wrote>. Do this NOW before the context window is exhausted.`;
@@ -1184,7 +1187,11 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
         // No idle flag yet — hook hasn't fired, so still working
         return true;
       }
-      const idleTs = parseInt(readFileSync(flagPath, 'utf-8').trim(), 10) * 1000;
+      const raw = readFileSync(flagPath, 'utf-8').trim();
+      const idleTs = parseInt(raw, 10) * 1000;
+      // If the flag is corrupted/empty (parseInt → NaN), assume agent is active
+      // — safer side of the branch than silently treating "not typing".
+      if (isNaN(idleTs)) return true;
       // Typing if injection happened AFTER the last idle signal
       return this.lastMessageInjectedAt > idleTs;
     } catch {

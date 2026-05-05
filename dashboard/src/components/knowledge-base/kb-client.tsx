@@ -58,6 +58,7 @@ export function KnowledgeBaseClient({ org, markdownContent, filePath }: Knowledg
   const [collections, setCollections] = useState<Collection[]>([]);
   const [collectionsLoading, setCollectionsLoading] = useState(true);
   const [totalDocs, setTotalDocs] = useState(0);
+  const [activeTab, setActiveTab] = useState('search');
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -134,7 +135,7 @@ export function KnowledgeBaseClient({ org, markdownContent, filePath }: Knowledg
   };
 
   return (
-    <Tabs defaultValue="search">
+    <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v ?? 'search')}>
       <TabsList variant="line">
         <TabsTrigger value="search">
           <IconSearch size={14} className="mr-1.5" />
@@ -330,9 +331,8 @@ export function KnowledgeBaseClient({ org, markdownContent, filePath }: Knowledg
                 className="hover:bg-muted/20 transition-colors cursor-pointer"
                 onClick={() => {
                   setSelectedCollection(col.name);
-                  // Switch to search tab by dispatching a click on the tab trigger
-                  document.querySelector<HTMLElement>('[data-slot="tabs-trigger"][value="search"]')?.click();
-                  inputRef.current?.focus();
+                  setActiveTab('search');
+                  setTimeout(() => inputRef.current?.focus(), 0);
                 }}
               >
                 <CardContent className="py-3 flex items-center justify-between">

@@ -1,4 +1,5 @@
-import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { appendFileSync, existsSync, readdirSync, readFileSync, statSync, unlinkSync, watch, writeFileSync } from 'fs';
+import type { FSWatcher } from 'fs';
 import { join, sep } from 'path';
 import { homedir } from 'os';
 import type { AgentConfig, AgentStatus, CtxEnv } from '../types/index.js';
@@ -53,6 +54,7 @@ export class AgentProcess {
   // crash recovery for an agent we just stopped intentionally.
   private exitPromise: Promise<void> | null = null;
   private resolveExit: (() => void) | null = null;
+  private forceFreshWatcher: FSWatcher | null = null;
   private dedup: MessageDedup;
   private log: LogFn;
   private onStatusChange: ((status: AgentStatus) => void) | null = null;
@@ -146,8 +148,9 @@ export class AgentProcess {
       this.sessionStart = new Date();
       this.log(`Running (pid: ${this.pty.getPid()})`);
 
-      // Start session timer
+      // Start session timer and force-fresh watcher
       this.startSessionTimer();
+      this.startForceFreshWatcher();
 
       this.notifyStatusChange();
     } catch (err) {
@@ -169,6 +172,7 @@ export class AgentProcess {
     this.stopRequested = true;
     this.log('Stopping...');
     this.clearSessionTimer();
+    this.clearForceFreshWatcher();
 
     // Capture and null out pty BEFORE any awaits so handleExit() during graceful
     // shutdown doesn't race with us and trigger crash recovery or a double-kill.
@@ -337,6 +341,7 @@ export class AgentProcess {
   private handleExit(exitCode: number): void {
     this.pty = null;
     this.clearSessionTimer();
+    this.clearForceFreshWatcher();
 
     // When the cortextos daemon is shut down by PM2, SIGTERM propagates to
     // the whole process group and reaches each PTY's Claude Code child
@@ -420,10 +425,7 @@ export class AgentProcess {
     // Check for force-fresh marker
     const forceFreshPath = join(this.env.ctxRoot, 'state', this.name, '.force-fresh');
     if (existsSync(forceFreshPath)) {
-      try {
-        const { unlinkSync } = require('fs');
-        unlinkSync(forceFreshPath);
-      } catch { /* ignore */ }
+      try { unlinkSync(forceFreshPath); } catch { /* ignore */ }
       return false;
     }
 
@@ -442,8 +444,8 @@ export class AgentProcess {
     );
 
     try {
-      const files = require('fs').readdirSync(convDir);
-      return files.some((f: string) => f.endsWith('.jsonl'));
+      const files = readdirSync(convDir);
+      return files.some((f) => f.endsWith('.jsonl'));
     } catch {
       return false;
     }
@@ -458,10 +460,7 @@ export class AgentProcess {
     // If agent has a heartbeat but no .onboarded marker, they completed onboarding but
     // forgot to write the marker. Auto-write it so they don't re-onboard next restart.
     if (!existsSync(onboardedPath) && existsSync(heartbeatPath)) {
-      try {
-        const { writeFileSync } = require('fs');
-        writeFileSync(onboardedPath, '', 'utf-8');
-      } catch { /* ignore */ }
+      try { writeFileSync(onboardedPath, '', 'utf-8'); } catch { /* ignore */ }
     }
 
     if (!existsSync(onboardedPath) && existsSync(onboardingPath)) {
@@ -542,7 +541,6 @@ export class AgentProcess {
     const markerPath = join(this.env.ctxRoot, 'state', this.name, '.handoff-doc-path');
     if (!existsSync(markerPath)) return '';
     try {
-      const { unlinkSync } = require('fs');
       const docPath = readFileSync(markerPath, 'utf-8').trim();
       unlinkSync(markerPath);
       if (!docPath || !existsSync(docPath)) return '';
@@ -595,6 +593,44 @@ export class AgentProcess {
     if (this.sessionTimer) {
       clearTimeout(this.sessionTimer);
       this.sessionTimer = null;
+    }
+  }
+
+  // Watch the agent state dir for .force-fresh to appear mid-session.
+  // When detected, give Claude Code a 2s grace period to finish its current
+  // turn, then send SIGTERM so the session exits. shouldContinue() deletes
+  // the marker on the next start() and returns false (fresh mode).
+  private startForceFreshWatcher(): void {
+    const stateDir = join(this.env.ctxRoot, 'state', this.name);
+    const forceFreshFile = '.force-fresh';
+
+    try {
+      this.forceFreshWatcher = watch(stateDir, (eventType, filename) => {
+        if (filename !== forceFreshFile) return;
+        if (!existsSync(join(stateDir, forceFreshFile))) return;
+        this.log('.force-fresh detected mid-session — sending SIGTERM after 2s grace period');
+        this.clearForceFreshWatcher();
+        setTimeout(() => {
+          const pid = this.pty?.getPid();
+          if (pid) {
+            try {
+              process.kill(pid, 'SIGTERM');
+            } catch (err) {
+              this.log(`SIGTERM to pid ${pid} failed: ${err}`);
+            }
+          }
+        }, 2000);
+      });
+      this.forceFreshWatcher.on('error', () => this.clearForceFreshWatcher());
+    } catch {
+      // State dir may not exist yet; watcher is best-effort
+    }
+  }
+
+  private clearForceFreshWatcher(): void {
+    if (this.forceFreshWatcher) {
+      try { this.forceFreshWatcher.close(); } catch { /* ignore */ }
+      this.forceFreshWatcher = null;
     }
   }
 
@@ -746,13 +782,19 @@ export class AgentProcess {
     generation: number,
     loopStartedAt: number,
   ): Promise<void> {
-    const GAP_POLL_MS = 10 * 60 * 1000;   // poll every 10 minutes
-    const GAP_MULTIPLIER = 2.0;            // nudge when gap > 2x expected interval
+    const GAP_POLL_MS = 10 * 60 * 1000;       // poll every 10 minutes
+    const GAP_MULTIPLIER = 3.0;                // nudge when gap > 3x expected interval (was 2.0; bumped to reduce
+                                                // false-positive nudge floods after --continue restarts when crons
+                                                // haven't yet fired post-restart but the agent IS healthy)
+    const NUDGE_BURST_LIMIT = 2;               // wave dampener: if N+ nudges fire within BURST_WINDOW_MS, skip the rest
+    const BURST_WINDOW_MS = 30 * 60 * 1000;    // 30-min sliding window for burst detection
+    const INITIAL_WAIT_MS = 15 * 60 * 1000;    // 15 min before first check (was 10; gives agent room to settle post-boot)
 
     const stateDir = join(this.env.ctxRoot, 'state', this.name);
+    const recentNudges: number[] = [];          // timestamps of nudges in current burst window
 
-    // Initial wait — give the agent time to boot and register crons before first check
-    await sleep(GAP_POLL_MS);
+    // Initial wait — give the agent time to boot, register crons, and process startup
+    await sleep(INITIAL_WAIT_MS);
 
     while (true) {
       if (generation !== this.lifecycleGeneration || this.status !== 'running') return;
@@ -782,6 +824,16 @@ export class AgentProcess {
         const threshold = intervalMs * GAP_MULTIPLIER;
 
         if (gapMs > threshold) {
+          // Wave dampener: prune nudges older than the burst window, then check the limit.
+          // After --continue restarts and pauses, multiple stale crons can simultaneously
+          // exceed threshold, producing nudge floods that thrash agent context. (#182, #270)
+          const burstCutoff = now - BURST_WINDOW_MS;
+          while (recentNudges.length && recentNudges[0]! < burstCutoff) recentNudges.shift();
+          if (recentNudges.length >= NUDGE_BURST_LIMIT) {
+            this.log(`Gap nudge SKIPPED (burst limit ${NUDGE_BURST_LIMIT} reached in ${BURST_WINDOW_MS / 60_000}min): ${cronDef.name}`);
+            continue;
+          }
+
           const gapMin = Math.round(gapMs / 60_000);
           const expectedMin = Math.round(intervalMs / 60_000);
           const restoreHint = cronDef.interval
@@ -792,6 +844,7 @@ export class AgentProcess {
           this.log(`Gap nudge: ${cronDef.name} silent ${gapMin}min (threshold: ${Math.round(threshold / 60_000)}min)`);
           if (this.pty && this.status === 'running') {
             injectMessage((data) => this.pty?.write(data), nudge);
+            recentNudges.push(now);
             // Stagger: wait between nudges so the agent can process each one
             // before the next arrives. Without this, N simultaneous stale crons
             // fire N back-to-back injections, spiking context and triggering

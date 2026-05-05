@@ -11,6 +11,24 @@ interface AgentStatusGridProps {
   heartbeats: Record<string, Heartbeat>;
 }
 
+function heartbeatAgeClass(ts: string | undefined): string {
+  if (!ts) return 'text-muted-foreground';
+  const ageMs = Date.now() - new Date(ts).getTime();
+  if (ageMs < 5 * 60 * 1000) return 'text-green-600 dark:text-green-400';
+  if (ageMs < 30 * 60 * 1000) return 'text-amber-500 dark:text-amber-400';
+  return 'text-red-500 dark:text-red-400';
+}
+
+function formatHeartbeatAge(ts: string | undefined): string {
+  if (!ts) return 'never';
+  const ageMs = Date.now() - new Date(ts).getTime();
+  const mins = Math.floor(ageMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ago`;
+}
+
 export function AgentStatusGrid({ agents, heartbeats }: AgentStatusGridProps) {
   return (
     <Card>
@@ -48,6 +66,9 @@ export function AgentStatusGrid({ agents, heartbeats }: AgentStatusGridProps) {
                       {agent.name}
                     </span>
                     <HealthDot status={agent.health} />
+                    <span className={`ml-auto text-[10px] tabular-nums shrink-0 ${heartbeatAgeClass(hb?.last_heartbeat)}`}>
+                      {formatHeartbeatAge(hb?.last_heartbeat)}
+                    </span>
                   </div>
                   {taskPreview && (
                     <p className="text-[11px] text-muted-foreground truncate">
