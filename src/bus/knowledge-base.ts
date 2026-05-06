@@ -301,9 +301,12 @@ export function ingestKnowledgeBase(
   const args = [mmragPath, 'ingest', ...paths, '--collection', collection];
   if (force) args.push('--force');
 
+  const requestedTimeout = Number(process.env.KB_INGEST_TIMEOUT_MS);
+  const ingestTimeoutMs = Math.max(60_000, Number.isFinite(requestedTimeout) && requestedTimeout > 0 ? requestedTimeout : 600_000);
+
   execFileSync(pythonPath, args, {
     encoding: 'utf-8',
-    timeout: 120000,
+    timeout: ingestTimeoutMs,
     env,
     stdio: 'inherit',
   });

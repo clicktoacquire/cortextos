@@ -1,11 +1,41 @@
-import { readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { Approval, ApprovalCategory, ApprovalStatus, BusPaths } from '../types/index.js';
+import { TelegramAPI } from '../telegram/api.js';
 import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
+import { parseEnvFile } from '../utils/env.js';
 import { randomString } from '../utils/random.js';
 import { validateApprovalCategory } from '../utils/validate.js';
 import { sendMessage } from './message.js';
 import { postActivity } from './system.js';
+
+/**
+ * Ping the requesting agent's own Telegram bot so the operator sees the
+ * approval request in the agent's chat, not just the org activity channel.
+ * Reads BOT_TOKEN and CHAT_ID from <agentDir>/.env. Silently skips if the
+ * .env is absent or the token/chat_id are missing — the activity-channel
+ * post is still the primary notification path.
+ */
+async function pingAgentChatId(
+  agentDir: string,
+  approvalId: string,
+  title: string,
+  category: string,
+): Promise<void> {
+  const envPath = join(agentDir, '.env');
+  if (!existsSync(envPath)) return;
+  const env = parseEnvFile(envPath);
+  const token = env['BOT_TOKEN'];
+  const chatId = env['CHAT_ID'];
+  if (!token || !chatId) return;
+  try {
+    const tg = new TelegramAPI(token);
+    const text = `*Approval required*\n*${title}*\ncategory: ${category}\nid: \`${approvalId}\``;
+    await tg.sendMessage(chatId, text);
+  } catch {
+    // Telegram unreachable must not fail approval creation.
+  }
+}
 
 /**
  * Build the inline keyboard posted to the activity channel alongside a
@@ -119,6 +149,7 @@ export async function createApproval(
   category: ApprovalCategory,
   context?: string,
   frameworkRoot?: string,
+  agentDir?: string,
 ): Promise<string> {
   validateApprovalCategory(category);
 
@@ -153,6 +184,10 @@ export async function createApproval(
   // via the orchestrator's activity-channel poller (see
   // daemon/agent-manager.ts).
   await postApprovalToActivityChannel(paths, org, approvalId, title, category, agentName, context, frameworkRoot);
+
+  if (agentDir) {
+    await pingAgentChatId(agentDir, approvalId, title, category);
+  }
 
   return approvalId;
 }
