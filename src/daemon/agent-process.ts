@@ -47,6 +47,10 @@ export class AgentProcess {
   // Guard: only one cron verification waiter in-flight per agent at a time.
   // Rapid --continue restarts must not stack duplicate waiters. (Issue #182)
   private cronVerificationPending: boolean = false;
+  // Compaction-aware cron resilience: true when context compaction is in progress.
+  // Gap-detection nudges queued here fire after compaction completes.
+  compacting: boolean = false;
+  private pendingCronNudges: Map<string, string> = new Map();
   // BUG-011 fix: stop() awaits this promise (resolved by the onExit handler in start())
   // to guarantee the PTY exit has fired before stopping=false is reset. Without
   // this, the exit handler can fire after stopping=false and trigger spurious
@@ -330,6 +334,37 @@ export class AgentProcess {
    */
   getConfig(): AgentConfig {
     return this.config;
+  }
+
+  /**
+   * Mark the agent as compacting (context compression in progress) or clear the flag.
+   * Called by fast-checker when context percentage crosses the compaction threshold
+   * or when a post-compaction signal (session_id change / PTY marker) is detected.
+   * Clearing the flag automatically drains any queued gap-detection nudges.
+   */
+  setCompacting(compacting: boolean): void {
+    if (this.compacting === compacting) return;
+    this.compacting = compacting;
+    if (!compacting) {
+      this.drainPendingCronNudges();
+    }
+  }
+
+  /**
+   * Fire all queued cron gap-detection nudges that were deferred during compaction.
+   * Injects each with a 2s gap to avoid context spike. Clears the queue on completion.
+   */
+  async drainPendingCronNudges(): Promise<void> {
+    if (this.pendingCronNudges.size === 0) return;
+    const entries = Array.from(this.pendingCronNudges.entries());
+    this.pendingCronNudges.clear();
+    for (const [name, nudge] of entries) {
+      this.log(`[CRON DRAINED] ${name} fired post-compaction`);
+      if (this.pty && this.status === 'running') {
+        injectMessage((data) => this.pty?.write(data), nudge);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
   }
 
   // --- Private methods ---
@@ -782,7 +817,11 @@ export class AgentProcess {
           const nudge = `[SYSTEM] Cron gap detected for "${cronDef.name}": last fired ${gapMin} minutes ago (expected every ${expectedMin} minutes). Run CronList to verify the cron is still active. If missing, restore it from config.json: /loop ${cronDef.interval} <cron prompt>.`;
 
           this.log(`Gap nudge: ${cronDef.name} silent ${gapMin}min (threshold: ${Math.round(threshold / 60_000)}min)`);
-          if (this.pty && this.status === 'running') {
+          if (this.compacting) {
+            // Agent is mid-compaction — PTY is deaf. Queue and fire after compaction.
+            this.log(`[CRON DEFERRED] ${cronDef.name} queued during compaction`);
+            this.pendingCronNudges.set(cronDef.name, nudge);
+          } else if (this.pty && this.status === 'running') {
             injectMessage((data) => this.pty?.write(data), nudge);
             // Stagger: wait between nudges so the agent can process each one
             // before the next arrives. Without this, N simultaneous stale crons

@@ -58,6 +58,8 @@ export class FastChecker {
   private ctxCircuitBrokenAt: number | null = null; // when circuit tripped (null = healthy)
   // Persisted to disk so --continue restarts don't reset the circuit breaker
   private ctxCircuitFile: string = '';
+  // Compaction detection threshold: mark agent compacting at this context percentage
+  private static readonly CTX_COMPACTION_THRESHOLD = 75;
 
   constructor(
     agent: AgentProcess,
@@ -928,6 +930,11 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
           this.ctxHandoffDeadlineAt = 0;
           this.ctxWarningFiredAt = 0;
           this.log(`New session detected (${incomingSessionId.slice(0, 8)}…) — per-session ctx state reset`);
+          // New session means compaction completed — clear the flag so queued nudges drain.
+          if (this.agent.compacting) {
+            this.log('Compaction complete (new session_id) — clearing compacting flag');
+            this.agent.setCompacting(false);
+          }
         }
         this.ctxLastSessionId = incomingSessionId;
       }
@@ -941,6 +948,12 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       this.log('Context overflow error detected in PTY output — force restarting');
       this.forceContextRestart('API overflow error in PTY output');
       return;
+    }
+
+    // Check PTY output for post-compaction resume marker.
+    if (this.agent.compacting && /Resuming conversation|Context compressed/i.test(recentOutput)) {
+      this.log('Compaction complete (PTY marker) — clearing compacting flag');
+      this.agent.setCompacting(false);
     }
 
     const { warn, handoff } = this.getCtxThresholds();
@@ -957,6 +970,13 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       this.ctxHandoffDeadlineAt = 0;
       this.forceContextRestart(`ctx ${Math.round(effectivePct)}% — handoff not completed within 5min`);
       return;
+    }
+
+    // Mark agent as compacting when context crosses the compaction threshold.
+    // Gap-detection nudges will queue rather than inject into a deaf PTY.
+    if (effectivePct >= FastChecker.CTX_COMPACTION_THRESHOLD && !this.agent.compacting) {
+      this.log(`Context at ${Math.round(effectivePct)}% — marking agent compacting, deferring cron nudges`);
+      this.agent.setCompacting(true);
     }
 
     // Tier 1: warning — PTY injection only, no Telegram ping (context management is internal)
