@@ -1,0 +1,12 @@
+{
+  "updated_at": "2026-05-06T18:16:04.638Z",
+  "crons": [
+    {
+      "name": "popup-bridge-watch",
+      "prompt": "bash $CTX_ROOT/scripts/popup-bridge/detect.sh",
+      "schedule": "* * * * *",
+      "enabled": true,
+      "created_at": "2026-05-06T18:16:04.637Z"
+    }
+  ]
+}
