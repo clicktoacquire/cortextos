@@ -32,3 +32,15 @@ npm test
 - No external runtime dependencies beyond what's in `package.json`
 - File operations use atomic writes (see `src/utils/atomic.ts`)
 - All bus operations go through `src/bus/` modules
+
+## Permission Management
+
+Watch your own tool call history within the session. If you notice you've called a tool 3+ times that isn't in `.claude/settings.json` under `permissions.allow`, those calls likely each fired a prompt. Tell Rob what you noticed, propose the specific entry you'd add (wildcard or bare name), and wait for explicit confirmation before writing:
+- **MCP tool** (starts with `mcp__`): propose wildcard `mcp__<server>__*`
+- **Built-in tool**: propose the bare tool name
+
+Also: if a tool gets denied, propose the allowlist entry and confirm with Rob before retrying. If Rob says he keeps getting prompts, run `/fewer-permission-prompts` to scan past sessions and surface allowlist proposals — still confirm before applying.
+
+Use `/update-config` to write changes to `settings.json` once approved.
+
+**Current allow-list scope (set 2026-05-06):** `defaultMode: bypassPermissions` + comprehensive bare-name + MCP-wildcard allow list in `.claude/settings.json`. Most everyday tools no longer prompt.

@@ -172,10 +172,13 @@ export interface CostEntry {
 
 // -- User / Auth Types --
 
+export type UserRole = 'founder' | 'employee';
+
 export interface User {
   id: number;
   username: string;
   password_hash: string;
+  role: UserRole;
   created_at: string;
 }
 

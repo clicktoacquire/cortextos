@@ -5,6 +5,8 @@ import { Sidebar } from './sidebar';
 import { Topbar } from './topbar';
 import { BottomNav } from './bottom-nav';
 import { OrgContext } from '@/hooks/use-org';
+import { ActiveClientProvider } from '@/contexts/ActiveClientContext';
+import { ClientSwitcher } from '@/components/ClientSwitcher';
 import {
   Sheet,
   SheetContent,
@@ -35,6 +37,7 @@ export function DashboardShell({ orgs, children }: DashboardShellProps) {
   }, [currentOrg]);
 
   return (
+    <ActiveClientProvider>
     <OrgContext.Provider value={{ currentOrg, setCurrentOrg, orgs }}>
       <div className="flex h-screen">
         {/* Desktop sidebar */}
@@ -65,5 +68,6 @@ export function DashboardShell({ orgs, children }: DashboardShellProps) {
         </div>
       </div>
     </OrgContext.Provider>
+    </ActiveClientProvider>
   );
 }

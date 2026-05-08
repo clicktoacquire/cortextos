@@ -174,6 +174,35 @@ function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_messages_org ON messages(org);
     CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
   `);
+
+  // Migration 002 (PHASES Task 2.4): audit_log table.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id      INTEGER NOT NULL,
+      username     TEXT    NOT NULL,
+      action       TEXT    NOT NULL,
+      subject_type TEXT    NOT NULL,
+      subject_id   TEXT,
+      metadata_json TEXT,
+      ip           TEXT,
+      ts           TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_log_ts           ON audit_log(ts);
+    CREATE INDEX IF NOT EXISTS idx_audit_log_user_id      ON audit_log(user_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_log_subject_type ON audit_log(subject_type);
+  `);
+
+  // Migration 001 (PHASES Task 2.1): add role column to users.
+  // SQLite does not support IF NOT EXISTS on ALTER TABLE; use try/catch.
+  // Safe to re-run: duplicate-column error is silently swallowed.
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'founder' CHECK (role IN ('founder', 'employee'))`);
+    db.exec(`UPDATE users SET role = 'founder' WHERE role IS NULL OR role = ''`);
+  } catch (err: unknown) {
+    // "duplicate column name: role" → already applied; ignore
+    if (!(err instanceof Error) || !err.message.includes('duplicate column')) throw err;
+  }
 }
 
 // globalThis singleton survives Next.js hot reload
