@@ -177,6 +177,7 @@ export type UserRole = 'founder' | 'employee';
 export interface User {
   id: number;
   username: string;
+  email: string | null;
   password_hash: string;
   role: UserRole;
   created_at: string;

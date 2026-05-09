@@ -6,7 +6,6 @@ import { Topbar } from './topbar';
 import { BottomNav } from './bottom-nav';
 import { OrgContext } from '@/hooks/use-org';
 import { ActiveClientProvider } from '@/contexts/ActiveClientContext';
-import { ClientSwitcher } from '@/components/ClientSwitcher';
 import {
   Sheet,
   SheetContent,

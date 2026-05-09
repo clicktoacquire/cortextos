@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { db } from '@/lib/db';
 import { defineAbilitiesFor } from '@/lib/abilities';
 import { DashboardShell } from '@/components/layout/dashboard-shell';
+import { HelpChat } from '@/components/HelpChat';
 import { getOrgs } from '@/lib/config';
 import type { User } from '@/lib/types';
 
@@ -36,5 +37,10 @@ export default async function AdminLayout({
 
   const orgs = getOrgs();
 
-  return <DashboardShell orgs={orgs}>{children}</DashboardShell>;
+  return (
+    <DashboardShell orgs={orgs}>
+      {children}
+      <HelpChat />
+    </DashboardShell>
+  );
 }

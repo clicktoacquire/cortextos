@@ -175,6 +175,37 @@ function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
   `);
 
+  // Migration 003 (PHASES Task 2.2): email on users, verification_tokens, accounts.
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN email TEXT UNIQUE`);
+  } catch (err: unknown) {
+    if (!(err instanceof Error) || !err.message.includes('duplicate column')) throw err;
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS verification_tokens (
+      identifier TEXT NOT NULL,
+      token      TEXT NOT NULL,
+      expires    TEXT NOT NULL,
+      PRIMARY KEY (identifier, token)
+    );
+    CREATE TABLE IF NOT EXISTS accounts (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type                TEXT    NOT NULL,
+      provider            TEXT    NOT NULL,
+      provider_account_id TEXT    NOT NULL,
+      refresh_token       TEXT,
+      access_token        TEXT,
+      expires_at          INTEGER,
+      token_type          TEXT,
+      scope               TEXT,
+      id_token            TEXT,
+      session_state       TEXT,
+      UNIQUE(provider, provider_account_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id);
+  `);
+
   // Migration 002 (PHASES Task 2.4): audit_log table.
   db.exec(`
     CREATE TABLE IF NOT EXISTS audit_log (

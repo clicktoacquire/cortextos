@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { OrgSelector } from './org-selector';
+import { ClientSwitcher } from '@/components/ClientSwitcher';
 
 interface TopbarProps {
   orgs: string[];
@@ -49,6 +50,7 @@ export function Topbar({ orgs, currentOrg, onOrgChange, onMenuClick }: TopbarPro
           </Button>
         )}
         <OrgSelector orgs={orgs} currentOrg={currentOrg} onOrgChange={onOrgChange} />
+        <ClientSwitcher />
       </div>
 
       {/* Right: Dark mode toggle + User menu */}

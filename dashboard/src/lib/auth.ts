@@ -1,47 +1,57 @@
 // cortextOS Dashboard - NextAuth v5 configuration
-// Credentials provider backed by SQLite users table
+// Providers: Credentials (existing), Resend magic-link (Task 2.2), Google OAuth (Task 2.2)
 
 import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
+import ResendProvider from 'next-auth/providers/resend';
+import Google from 'next-auth/providers/google';
 import bcrypt from 'bcryptjs';
+import { Resend } from 'resend';
 import { db } from './db';
 import { checkRateLimit, resetRateLimit } from './rate-limit';
+import { makeSQLiteAdapter } from './auth-adapter';
 import type { User } from './types';
+
+const cookieOptions = (secure: boolean) => ({
+  httpOnly: true,
+  sameSite: 'lax' as const,
+  path: '/',
+  secure,
+});
+
+const isProd = process.env.NODE_ENV === 'production';
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
-  // Force simple cookie names without __Secure- / __Host- prefixes.
-  // NextAuth v5 auto-enables these for HTTPS (including Cloudflare tunnels via
-  // X-Forwarded-Proto), but tunnel proxies may not forward Secure-prefixed
-  // cookies reliably. The middleware checks for authjs.session-token, so this
-  // must stay consistent.
+  adapter: makeSQLiteAdapter(),
   cookies: {
     sessionToken: {
       name: 'authjs.session-token',
-      options: { httpOnly: true, sameSite: 'lax', path: '/', secure: process.env.NODE_ENV === 'production' },
+      options: cookieOptions(isProd),
     },
     csrfToken: {
       name: 'authjs.csrf-token',
-      options: { httpOnly: true, sameSite: 'lax', path: '/', secure: process.env.NODE_ENV === 'production' },
+      options: cookieOptions(isProd),
     },
     callbackUrl: {
       name: 'authjs.callback-url',
-      options: { sameSite: 'lax', path: '/', secure: process.env.NODE_ENV === 'production' },
+      options: { sameSite: 'lax', path: '/', secure: isProd },
     },
     pkceCodeVerifier: {
       name: 'authjs.pkce.code_verifier',
-      options: { httpOnly: true, sameSite: 'lax', path: '/', secure: process.env.NODE_ENV === 'production' },
+      options: cookieOptions(isProd),
     },
     state: {
       name: 'authjs.state',
-      options: { httpOnly: true, sameSite: 'lax', path: '/', secure: process.env.NODE_ENV === 'production' },
+      options: cookieOptions(isProd),
     },
     nonce: {
       name: 'authjs.nonce',
-      options: { httpOnly: true, sameSite: 'lax', path: '/', secure: process.env.NODE_ENV === 'production' },
+      options: cookieOptions(isProd),
     },
   },
   providers: [
+    // ── Credentials (username + password, existing) ───────────────────────
     Credentials({
       name: 'Credentials',
       credentials: {
@@ -49,24 +59,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         password: { label: 'Password', type: 'password' },
       },
       async authorize(credentials, request) {
-        // Security (H8): Rate limit auth attempts to prevent brute force.
-        // Only trust x-forwarded-for when behind a known proxy (TRUST_PROXY=true);
-        // otherwise it is trivially spoofable.
         const trustProxy = process.env.TRUST_PROXY === 'true';
         const headers = (request as Request | undefined)?.headers;
         const ip = trustProxy
           ? (headers?.get('x-forwarded-for')?.split(',')[0]?.trim() ?? '0.0.0.0')
-          // CF-Connecting-IP is set by Cloudflare and is not spoofable from outside CF
           : (headers?.get('x-real-ip') ?? headers?.get('cf-connecting-ip') ?? '0.0.0.0');
 
         const { allowed } = checkRateLimit(ip);
-        if (!allowed) {
-          throw new Error('Too many attempts. Please try again later.');
-        }
+        if (!allowed) throw new Error('Too many attempts. Please try again later.');
 
         if (!credentials?.username || !credentials?.password) return null;
 
-        // Seed admin user on first auth attempt if no users exist
         await seedAdminUser();
 
         const user = db
@@ -74,21 +77,45 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           .get(credentials.username as string) as User | undefined;
         if (!user) return null;
 
-        const valid = await bcrypt.compare(
-          credentials.password as string,
-          user.password_hash
-        );
+        const valid = await bcrypt.compare(credentials.password as string, user.password_hash);
         if (!valid) return null;
 
-        // Auth successful — reset rate limit counter
         resetRateLimit(ip);
 
-        return {
-          id: String(user.id),
-          name: user.username,
-        };
+        return { id: String(user.id), name: user.username, email: user.email ?? undefined };
       },
     }),
+
+    // ── Resend magic-link ─────────────────────────────────────────────────
+    ResendProvider({
+      apiKey: process.env.RESEND_API_KEY,
+      from: process.env.RESEND_FROM ?? 'noreply@clicktoacquire.com',
+      async sendVerificationRequest({ identifier: email, url, provider }) {
+        const apiKey = provider.apiKey ?? process.env.RESEND_API_KEY;
+        if (!apiKey) throw new Error('RESEND_API_KEY is not set');
+        const resend = new Resend(apiKey);
+        await resend.emails.send({
+          from: provider.from ?? 'noreply@clicktoacquire.com',
+          to: email,
+          subject: 'Sign in to CTA Platform',
+          html: `
+            <p>Click the link below to sign in to the CTA Platform dashboard:</p>
+            <p><a href="${url}" style="font-size:16px;font-weight:600">Sign in</a></p>
+            <p style="color:#666;font-size:12px">Link expires in 24 hours. If you didn't request this, ignore this email.</p>
+          `,
+        });
+      },
+    }),
+
+    // ── Google OAuth ──────────────────────────────────────────────────────
+    // Config-ready state: works once GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET are set.
+    ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+      ? [Google({
+          clientId: process.env.GOOGLE_CLIENT_ID,
+          clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+          allowDangerousEmailAccountLinking: true,
+        })]
+      : []),
   ],
   pages: {
     signIn: '/login',
@@ -97,15 +124,24 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     strategy: 'jwt',
   },
   callbacks: {
-    jwt({ token, user }) {
-      if (user) {
+    async jwt({ token, user, account }) {
+      if (user?.id) {
+        // Fresh sign-in: hydrate role + client_id from DB
+        const row = db
+          .prepare('SELECT role FROM users WHERE id = ?')
+          .get(Number(user.id)) as { role: string } | undefined;
         token.id = user.id;
+        token.role = row?.role ?? 'founder';
+        token.client_id = null;
       }
+      // On subsequent token refreshes role is already in the token; keep it.
       return token;
     },
     session({ session, token }) {
       if (token.id && session.user) {
         session.user.id = token.id as string;
+        session.user.role = token.role as string;
+        session.user.client_id = (token.client_id as string | null) ?? null;
       }
       return session;
     },
@@ -121,30 +157,18 @@ export async function seedAdminUser(): Promise<void> {
     .prepare('SELECT COUNT(*) as count FROM users')
     .get() as { count: number };
 
-  // Early return: users already exist and no password sync requested.
-  // Do NOT validate ADMIN_PASSWORD here — existing deployments may not have it set,
-  // and we don't need it when there is nothing to seed or sync.
-  if (row.count > 0 && process.env.SYNC_ADMIN_PASSWORD !== 'true') {
-    return;
-  }
+  if (row.count > 0 && process.env.SYNC_ADMIN_PASSWORD !== 'true') return;
 
   const username = process.env.ADMIN_USERNAME ?? 'admin';
-
-  // Security (H8): Do not fall back to hardcoded password.
-  // Only validate when we actually need the password (seeding or syncing).
   const password = process.env.ADMIN_PASSWORD;
-  if (!password) {
-    throw new Error('ADMIN_PASSWORD environment variable is required but not set.');
-  }
+  if (!password) throw new Error('ADMIN_PASSWORD environment variable is required but not set.');
+
   const KNOWN_DEFAULTS = ['cortextos', 'password', 'admin', 'changeme'];
-  if (process.env.NODE_ENV === 'production' && KNOWN_DEFAULTS.includes(password)) {
+  if (isProd && KNOWN_DEFAULTS.includes(password)) {
     throw new Error('ADMIN_PASSWORD is a known default. Set a strong password in .env.local');
   }
 
   if (row.count > 0) {
-    // Opt-in password sync: only update stored hash when SYNC_ADMIN_PASSWORD=true.
-    // This prevents the dashboard from silently overwriting a password that was
-    // changed through the UI on every restart.
     const user = db
       .prepare('SELECT password_hash FROM users WHERE username = ?')
       .get(username) as { password_hash: string } | undefined;
@@ -160,10 +184,10 @@ export async function seedAdminUser(): Promise<void> {
   }
 
   const hash = await bcrypt.hash(password, 12);
-  db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(
-    username,
-    hash
-  );
+  db.prepare(`
+    INSERT INTO users (username, email, password_hash, role)
+    VALUES (?, ?, ?, 'founder')
+  `).run(username, process.env.ADMIN_EMAIL ?? null, hash);
 
   console.log(`[auth] Seeded admin user: ${username}`);
 }
