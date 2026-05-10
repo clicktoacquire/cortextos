@@ -10,6 +10,7 @@ import { Resend } from 'resend';
 import { db } from './db';
 import { checkRateLimit, resetRateLimit } from './rate-limit';
 import { makeSQLiteAdapter } from './auth-adapter';
+import { audit } from './audit';
 import type { User } from './types';
 
 const cookieOptions = (secure: boolean) => ({
@@ -124,7 +125,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     strategy: 'jwt',
   },
   callbacks: {
-    async jwt({ token, user, account }) {
+    async signIn({ user }) {
+      // Audit every successful sign-in
+      if (user?.id) {
+        try {
+          audit({
+            userId: Number(user.id),
+            username: user.name ?? user.email ?? String(user.id),
+            action: 'login',
+            subjectType: 'Session',
+          });
+        } catch {
+          // Non-fatal: audit table may not exist yet on first boot
+        }
+      }
+      return true;
+    },
+    async jwt({ token, user }) {
       if (user?.id) {
         // Fresh sign-in: hydrate role + client_id from DB
         const row = db

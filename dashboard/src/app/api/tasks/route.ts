@@ -4,6 +4,8 @@ import { join } from 'path';
 import { getTasks } from '@/lib/data/tasks';
 import { getFrameworkRoot, getCTXRoot, getOrgs } from '@/lib/config';
 import { syncAll } from '@/lib/sync';
+import { auth } from '@/lib/auth';
+import { audit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 
@@ -128,8 +130,26 @@ export async function POST(request: NextRequest) {
       // Sync is best-effort
     }
 
+    const taskId = result.trim();
+
+    // Audit the create action
+    try {
+      const session = await auth();
+      if (session?.user?.id) {
+        audit({
+          userId: Number(session.user.id),
+          username: session.user.name ?? session.user.email ?? session.user.id,
+          action: 'create',
+          subjectType: 'Task',
+          subjectId: taskId,
+          metadata: { title: title.trim() },
+          ip: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? undefined,
+        });
+      }
+    } catch { /* non-fatal */ }
+
     return Response.json(
-      { success: true, taskId: result.trim() },
+      { success: true, taskId },
       { status: 201 },
     );
   } catch (err: unknown) {

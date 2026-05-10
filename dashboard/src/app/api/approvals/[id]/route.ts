@@ -4,6 +4,8 @@ import path from 'path';
 import { getApprovalById } from '@/lib/data/approvals';
 import { getFrameworkRoot, getCTXRoot } from '@/lib/config';
 import { syncAll } from '@/lib/sync';
+import { auth } from '@/lib/auth';
+import { audit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 
@@ -125,6 +127,22 @@ export async function PATCH(
     } catch {
       // Sync is best-effort
     }
+
+    // Audit the resolution
+    try {
+      const session = await auth();
+      if (session?.user?.id) {
+        audit({
+          userId: Number(session.user.id),
+          username: session.user.name ?? session.user.email ?? session.user.id,
+          action: decision === 'approved' ? 'approve' : 'reject',
+          subjectType: 'Approval',
+          subjectId: id,
+          metadata: { note: sanitizedNote },
+          ip: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? undefined,
+        });
+      }
+    } catch { /* non-fatal */ }
 
     return Response.json({ success: true });
   } catch (err: unknown) {
