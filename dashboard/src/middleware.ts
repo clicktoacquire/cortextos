@@ -6,6 +6,11 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { jwtVerify } from 'jose';
+import { getToken } from 'next-auth/jwt';
+
+// Routes that require founder role — employees are blocked and redirected to /unauthorized
+const FOUNDER_ONLY_PREFIXES = ['/billing', '/publish'];
+const FOUNDER_ONLY_API_PREFIXES = ['/api/billing', '/api/publish'];
 
 // Allowed CORS origins - localhost dev + configured deployment URL + mobile app
 // Built once at module load: env-derived origins are validated via `new URL()`,
@@ -129,6 +134,29 @@ export async function middleware(request: NextRequest) {
     const loginUrl = new URL('/login', request.url);
     loginUrl.searchParams.set('callbackUrl', pathname);
     return NextResponse.redirect(loginUrl);
+  }
+
+  // Role-based access: block employees from founder-only routes
+  const isFounderOnlyPage = FOUNDER_ONLY_PREFIXES.some((p) => pathname.startsWith(p));
+  const isFounderOnlyApi = FOUNDER_ONLY_API_PREFIXES.some((p) => pathname.startsWith(p));
+  if (isFounderOnlyPage || isFounderOnlyApi) {
+    try {
+      const token = await getToken({
+        req: request,
+        secret: process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET ?? '',
+        cookieName: 'authjs.session-token',
+      });
+      if (token?.role === 'employee') {
+        if (isFounderOnlyApi) {
+          const res = NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+          res.headers.set('Access-Control-Allow-Origin', corsOrigin);
+          return res;
+        }
+        return NextResponse.redirect(new URL('/unauthorized', request.url));
+      }
+    } catch {
+      // If token decode fails, fall through — the session check above already passed
+    }
   }
 
   const response = NextResponse.next();
