@@ -175,7 +175,7 @@ export interface CostEntry {
 
 // -- User / Auth Types --
 
-export type UserRole = 'founder' | 'employee';
+export type UserRole = 'founder' | 'employee' | 'client';
 
 export interface User {
   id: number;
@@ -183,6 +183,7 @@ export interface User {
   email: string | null;
   password_hash: string;
   role: UserRole;
+  client_id: string | null;
   created_at: string;
 }
 

@@ -145,11 +145,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (user?.id) {
         // Fresh sign-in: hydrate role + client_id from DB
         const row = db
-          .prepare('SELECT role FROM users WHERE id = ?')
-          .get(Number(user.id)) as { role: string } | undefined;
+          .prepare('SELECT role, client_id FROM users WHERE id = ?')
+          .get(Number(user.id)) as { role: string; client_id: string | null } | undefined;
         token.id = user.id;
         token.role = row?.role ?? 'founder';
-        token.client_id = null;
+        token.client_id = row?.client_id ?? null;
       }
       // On subsequent token refreshes role is already in the token; keep it.
       return token;

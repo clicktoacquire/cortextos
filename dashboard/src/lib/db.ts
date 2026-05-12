@@ -175,6 +175,46 @@ function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
   `);
 
+  // Migration 006 (PHASES Task 9.8): portal audit trail.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS portal_audit_events (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id    TEXT    NOT NULL,
+      resource_type TEXT   NOT NULL,
+      resource_id  TEXT    NOT NULL,
+      action       TEXT    NOT NULL,
+      actor        TEXT    NOT NULL,
+      actor_role   TEXT    NOT NULL,
+      meta_json    TEXT,
+      created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_portal_audit_client   ON portal_audit_events(client_id);
+    CREATE INDEX IF NOT EXISTS idx_portal_audit_resource ON portal_audit_events(resource_type, resource_id);
+    CREATE INDEX IF NOT EXISTS idx_portal_audit_ts       ON portal_audit_events(created_at);
+  `);
+
+  // Migration 005 (PHASES Task 9.6): portal_answers — agency annotations per question.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS portal_answers (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id   TEXT    NOT NULL,
+      question_id TEXT    NOT NULL,
+      content     TEXT    NOT NULL,
+      authored_by TEXT    NOT NULL,
+      created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(client_id, question_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_portal_answers_client ON portal_answers(client_id);
+  `);
+
+  // Migration 004 (PHASES Task 9.1): client_id on users for portal role scoping.
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN client_id TEXT`);
+  } catch (err: unknown) {
+    if (!(err instanceof Error) || !err.message.includes('duplicate column')) throw err;
+  }
+
   // Migration 003 (PHASES Task 2.2): email on users, verification_tokens, accounts.
   try {
     db.exec(`ALTER TABLE users ADD COLUMN email TEXT UNIQUE`);

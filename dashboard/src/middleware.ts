@@ -12,6 +12,9 @@ import { getToken } from 'next-auth/jwt';
 const FOUNDER_ONLY_PREFIXES = ['/billing', '/publish'];
 const FOUNDER_ONLY_API_PREFIXES = ['/api/billing', '/api/publish'];
 
+// Portal routes require role=client — non-clients are redirected to /
+const PORTAL_PREFIX = '/portal';
+
 // Allowed CORS origins - localhost dev + configured deployment URL + mobile app
 // Built once at module load: env-derived origins are validated via `new URL()`,
 // malformed values are dropped with a warning, and wildcards are explicitly rejected.
@@ -139,20 +142,40 @@ export async function middleware(request: NextRequest) {
   // Role-based access: block employees from founder-only routes
   const isFounderOnlyPage = FOUNDER_ONLY_PREFIXES.some((p) => pathname.startsWith(p));
   const isFounderOnlyApi = FOUNDER_ONLY_API_PREFIXES.some((p) => pathname.startsWith(p));
-  if (isFounderOnlyPage || isFounderOnlyApi) {
+  const isPortalRoute = pathname.startsWith(PORTAL_PREFIX);
+
+  if (isFounderOnlyPage || isFounderOnlyApi || isPortalRoute) {
     try {
       const token = await getToken({
         req: request,
         secret: process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET ?? '',
         cookieName: 'authjs.session-token',
       });
+
+      // Portal: only role=client may enter; redirect others to /
+      if (isPortalRoute && token?.role !== 'client') {
+        return NextResponse.redirect(new URL('/', request.url));
+      }
+
+      // Portal: enforce client_id scoping — /portal/[clientId] must match token.client_id
+      if (isPortalRoute && token?.role === 'client') {
+        const segments = pathname.split('/').filter(Boolean);
+        // segments[0] = 'portal', segments[1] = clientId
+        const routeClientId = segments[1];
+        if (routeClientId && token.client_id && token.client_id !== routeClientId) {
+          return NextResponse.redirect(new URL(`/portal/${token.client_id}`, request.url));
+        }
+      }
+
       if (token?.role === 'employee') {
         if (isFounderOnlyApi) {
           const res = NextResponse.json({ error: 'Forbidden' }, { status: 403 });
           res.headers.set('Access-Control-Allow-Origin', corsOrigin);
           return res;
         }
-        return NextResponse.redirect(new URL('/unauthorized', request.url));
+        if (isFounderOnlyPage) {
+          return NextResponse.redirect(new URL('/unauthorized', request.url));
+        }
       }
     } catch {
       // If token decode fails, fall through — the session check above already passed

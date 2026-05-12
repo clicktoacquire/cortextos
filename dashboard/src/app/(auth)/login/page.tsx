@@ -95,8 +95,8 @@ export default function LoginPage() {
 
     const body = new URLSearchParams();
     body.set('csrfToken', submitToken || '');
-    body.set('username', usernameInput?.value || '');
-    body.set('password', passwordInput?.value || '');
+    body.set('username', username);
+    body.set('password', password);
 
 
     try {
