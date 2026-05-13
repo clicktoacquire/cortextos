@@ -61,6 +61,7 @@ export async function getHeadlineMetrics(): Promise<HeadlineMetrics> {
       SAFE_DIVIDE(c.clicks, c.impressions) * 100 AS fleet_ctr_7d,
       SAFE_DIVIDE(p.clicks, p.impressions) * 100 AS fleet_ctr_prior_7d
     FROM current_7d c, prior_7d p
+    LIMIT 1
   `);
   return rows[0] ?? {
     fleet_spend_7d: 0, fleet_spend_prior_7d: 0, spend_change_pct: null,
@@ -239,6 +240,7 @@ export async function getDataFreshness(): Promise<DataFreshness[]> {
     FROM \`click-to-acquire.analytics.daily_metrics\` dm
     LEFT JOIN \`click-to-acquire.analytics.clients\` cl USING (client_id)
     WHERE dm.entity_type = 'campaign'
+      AND dm.metric_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
     GROUP BY display_name, dm.platform
     ORDER BY display_name, dm.platform
     LIMIT 50
