@@ -55,16 +55,17 @@ export interface PerformanceSummary {
  */
 export async function listClients(): Promise<ClientListRow[]> {
   const bq = getBQ();
+  // analytics.clients is a small dim table (no partitioning, no updated_at).
+  // Use display_name + ingested_at as the activity proxy.
   const query = `
     SELECT
       client_id,
-      name,
+      display_name AS name,
       vertical,
       status,
-      MAX(updated_at) AS last_activity
+      FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', MAX(ingested_at)) AS last_activity
     FROM \`${PROJECT}.${DATASET}.clients\`
-    WHERE _PARTITIONTIME >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
-    GROUP BY client_id, name, vertical, status
+    GROUP BY client_id, display_name, vertical, status
     ORDER BY last_activity DESC
     LIMIT 100
   `;
@@ -80,7 +81,7 @@ export async function getClient(clientId: string): Promise<ClientRow | null> {
   const query = `
     SELECT
       client_id,
-      name,
+      display_name AS name,
       vertical,
       status,
       has_existing_accounts,
@@ -90,12 +91,11 @@ export async function getClient(clientId: string): Promise<ClientRow | null> {
       primary_funnel_type,
       lifecycle_stage,
       cta_platform_managed,
-      MAX(updated_at) AS last_activity
+      FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', MAX(ingested_at)) AS last_activity
     FROM \`${PROJECT}.${DATASET}.clients\`
     WHERE client_id = @clientId
-      AND _PARTITIONTIME >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
     GROUP BY
-      client_id, name, vertical, status, has_existing_accounts,
+      client_id, display_name, vertical, status, has_existing_accounts,
       gdrive_folder_id, ghl_location_id, onboarded_at, primary_funnel_type,
       lifecycle_stage, cta_platform_managed
     LIMIT 1
@@ -116,17 +116,16 @@ export async function getClientPerformance(clientId: string): Promise<Performanc
   const bq = getBQ();
   const query = `
     SELECT
-      FORMAT_DATE('%Y-%m-%d', date) AS date,
+      FORMAT_DATE('%Y-%m-%d', metric_date) AS date,
       SUM(impressions) AS impressions,
       SUM(clicks) AS clicks,
       SUM(conversions) AS conversions,
-      ROUND(SUM(cost_micros) / 1e6, 2) AS cost
+      ROUND(SUM(spend), 2) AS cost
     FROM \`${PROJECT}.${DATASET}.daily_metrics\`
     WHERE client_id = @clientId
-      AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
-      AND _PARTITIONTIME >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 31 DAY)
-    GROUP BY date
-    ORDER BY date DESC
+      AND metric_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+    GROUP BY metric_date
+    ORDER BY metric_date DESC
     LIMIT 31
   `;
   const [rows] = await bq.query({
@@ -144,14 +143,14 @@ export async function getClientHitlQueue(clientId: string): Promise<Array<{ id: 
   const bq = getBQ();
   const query = `
     SELECT
-      id,
-      title,
-      created_at,
-      category
+      recommendation_id AS id,
+      recommended_action AS title,
+      FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', created_at) AS created_at,
+      gate_type AS category
     FROM \`${PROJECT}.${DATASET}.hitl_recommendations\`
     WHERE client_id = @clientId
       AND status = 'pending'
-      AND _PARTITIONTIME >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 90 DAY)
+      AND created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 90 DAY)
     ORDER BY created_at DESC
     LIMIT 50
   `;

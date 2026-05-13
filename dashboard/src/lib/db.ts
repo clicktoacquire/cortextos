@@ -216,11 +216,14 @@ function initializeSchema(db: Database.Database): void {
   }
 
   // Migration 003 (PHASES Task 2.2): email on users, verification_tokens, accounts.
+  // SQLite forbids UNIQUE on ALTER TABLE ADD COLUMN — add the column plain, then
+  // enforce uniqueness with a partial index so existing NULL emails coexist.
   try {
-    db.exec(`ALTER TABLE users ADD COLUMN email TEXT UNIQUE`);
+    db.exec(`ALTER TABLE users ADD COLUMN email TEXT`);
   } catch (err: unknown) {
     if (!(err instanceof Error) || !err.message.includes('duplicate column')) throw err;
   }
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL`);
   db.exec(`
     CREATE TABLE IF NOT EXISTS verification_tokens (
       identifier TEXT NOT NULL,
