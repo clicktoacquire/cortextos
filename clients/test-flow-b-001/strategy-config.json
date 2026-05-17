@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0.0",
+  "client_id": "test-flow-b-001",
+  "generated_at": "2026-05-16T17:29:45.984Z",
+  "picasso_version": "0.1.0-dry-run",
+  "rob_amended": false,
+  "amendment_notes": "",
+  "amendment_history": [],
+  "quiz_mapping": {
+    "answer_combinations": [
+      {
+        "answers": [
+          "answer_placeholder_a"
+        ],
+        "service": "service_placeholder_1",
+        "mechanism": "mechanism_placeholder_1"
+      }
+    ],
+    "result_page_type": "personalized_recommendation"
+  },
+  "funnel_priority": [
+    {
+      "type": "simple_lead_capture_lp",
+      "priority_score": 100,
+      "build_status": "queued"
+    },
+    {
+      "type": "multi_step_lp",
+      "priority_score": 90,
+      "build_status": "queued"
+    },
+    {
+      "type": "quiz_funnel",
+      "priority_score": 80,
+      "build_status": "queued"
+    }
+  ],
+  "scarcity_mechanic": {
+    "selected": "loss_framing",
+    "config": {
+      "stat_text": "",
+      "stat_source": ""
+    },
+    "timer_opt_in": false
+  },
+  "vertical_template": "repipes",
+  "wave2_run_id": null,
+  "wave2_pending": true
+}
