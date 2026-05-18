@@ -114,6 +114,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         return {
           id: String(user.id),
           name: user.username,
+          role: user.role ?? 'admin',
         };
       },
     }),
@@ -128,12 +129,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     jwt({ token, user }) {
       if (user) {
         token.id = user.id;
+        token.role = (user as { role?: string }).role ?? 'admin';
       }
       return token;
     },
     session({ session, token }) {
       if (token.id && session.user) {
         session.user.id = token.id as string;
+        (session.user as { role?: string }).role = (token.role as string) ?? 'admin';
       }
       return session;
     },

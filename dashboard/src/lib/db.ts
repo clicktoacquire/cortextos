@@ -96,8 +96,13 @@ export async function initializeSchema(): Promise<void> {
       email TEXT,
       totp_secret TEXT,
       totp_enabled INTEGER NOT NULL DEFAULT 0,
+      role TEXT NOT NULL DEFAULT 'admin',
       created_at TEXT NOT NULL DEFAULT (NOW()::TEXT)
     )
+  `;
+  // Migrate existing rows: add role column if the table was created before this migration
+  await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'admin'
   `;
   await sql`
     CREATE TABLE IF NOT EXISTS password_resets (
