@@ -44,10 +44,11 @@ function writeAgentFile(agent: string, rel: string, body: string): string {
 
 async function runCli(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
   try {
+    const { CTX_AGENT_DIR: _agentDir, CTX_PROJECT_ROOT: _projectRoot, CTX_ORG: _org, ...inheritedEnv } = process.env;
     const { stdout, stderr } = await execFileAsync(
       process.execPath,
       [DIST_CLI, 'bus', 'upgrade-cron-teaching', ...args],
-      { env: { ...process.env, CTX_FRAMEWORK_ROOT: frameworkRoot, CTX_ROOT: frameworkRoot } },
+      { env: { ...inheritedEnv, CTX_FRAMEWORK_ROOT: frameworkRoot, CTX_PROJECT_ROOT: frameworkRoot, CTX_ROOT: frameworkRoot } },
     );
     return { stdout, stderr, code: 0 };
   } catch (err) {

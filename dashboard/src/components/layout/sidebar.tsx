@@ -18,10 +18,12 @@ import {
   IconClock,
   IconTarget,
   IconMessages,
-IconDatabase,
+  IconDatabase,
   IconMessageQuestion,
   IconBulb,
-IconNotes,
+  IconNotes,
+  IconBuilding,
+  IconReportMoney,
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -43,6 +45,7 @@ const navItems: NavItem[] = [
   { label: 'Activity', href: '/activity', icon: IconActivity, section: 'core' },
 
   // Operations
+  { label: 'Clients', href: '/clients', icon: IconBuilding, section: 'ops' },
   { label: 'Comms', href: '/comms', icon: IconMessages, section: 'ops' },
   { label: 'Approvals', href: '/approvals', icon: IconShieldCheck, section: 'ops' },
   { label: 'Workflows', href: '/workflows', icon: IconClock, section: 'ops' },
@@ -50,6 +53,7 @@ const navItems: NavItem[] = [
   { label: 'Answers', href: '/answers', icon: IconMessageQuestion, section: 'ops' },
   { label: 'Recommendations', href: '/recommendations', icon: IconBulb, section: 'ops' },
   { label: 'Analytics', href: '/analytics', icon: IconChartDots3, section: 'ops' },
+  { label: 'Finance', href: '/finance/pnl', icon: IconReportMoney, section: 'ops' },
   { label: 'Warehouse', href: '/warehouse', icon: IconDatabase, section: 'ops' },
 
   // Intelligence
