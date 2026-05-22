@@ -15,6 +15,11 @@ let bqClient: BigQuery | null = null;
 
 function getBQ(): BigQuery {
   if (bqClient) return bqClient;
+  const credsJson = process.env.GOOGLE_CREDENTIALS_JSON;
+  if (credsJson) {
+    bqClient = new BigQuery({ projectId: 'click-to-acquire', credentials: JSON.parse(credsJson) });
+    return bqClient;
+  }
   const keyPath = join(homedir(), '.cortextos', 'secrets', 'bigquery-key.json');
   const credentials = JSON.parse(readFileSync(keyPath, 'utf-8'));
   bqClient = new BigQuery({ projectId: 'click-to-acquire', credentials });

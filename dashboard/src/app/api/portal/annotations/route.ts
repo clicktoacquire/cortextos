@@ -9,9 +9,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { BigQuery } from '@google-cloud/bigquery';
 import { auth } from '@/lib/auth';
 import { randomUUID } from 'crypto';
+import { makeBQClient } from '@/lib/bq';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,7 +19,7 @@ const PROJECT = process.env.GCLOUD_PROJECT ?? 'click-to-acquire';
 const E2E_TOKEN = process.env.E2E_TOKEN ?? 'e2e-smoke-test-001';
 
 function getBQ() {
-  return new BigQuery({ projectId: PROJECT });
+  return makeBQClient(PROJECT);
 }
 
 function isE2EAuthorized(req: NextRequest): boolean {

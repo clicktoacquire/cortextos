@@ -1,16 +1,14 @@
 import { NextRequest } from 'next/server';
-import { BigQuery } from '@google-cloud/bigquery';
+import { makeBQClient } from '@/lib/bq';
 
 export const dynamic = 'force-dynamic';
 
-const BQ_KEY_PATH =
-  process.env.BQ_KEY_PATH ?? `${process.env.HOME}/.cortextos/secrets/bigquery-key.json`;
 const BQ_PROJECT = 'click-to-acquire';
 const BQ_DATASET = 'analytics';
 const TABLE = 'recommendations';
 
 function getBQ() {
-  return new BigQuery({ projectId: BQ_PROJECT, keyFilename: BQ_KEY_PATH });
+  return makeBQClient(BQ_PROJECT);
 }
 
 export async function GET(request: NextRequest) {

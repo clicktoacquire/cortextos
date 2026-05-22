@@ -5,14 +5,14 @@
  * All queries: aggregate-only, partition-filtered, LIMIT ≤ 100.
  */
 
-import { BigQuery } from '@google-cloud/bigquery';
+import { makeBQClient } from '@/lib/bq';
 
 const PROJECT = process.env.GCLOUD_PROJECT ?? 'click-to-acquire';
 const DATASET = 'analytics';
 const CTA_DATASET = 'cta_platform';
 
-function getBQ(): BigQuery {
-  return new BigQuery({ projectId: PROJECT });
+function getBQ() {
+  return makeBQClient(PROJECT);
 }
 
 export interface DateRange {
