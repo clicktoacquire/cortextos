@@ -1,15 +1,13 @@
-import { BigQuery } from '@google-cloud/bigquery';
 import type { FactBundle, Period, QuestionId } from './types';
 import { QUESTION_BY_ID } from './registry';
+import { makeBQClient } from '@/lib/bq';
 
 const PROJECT_ID = process.env.BQ_PROJECT_ID ?? 'click-to-acquire';
 const DATASET = process.env.BQ_DATASET ?? 'analytics';
 const TABLE = process.env.BQ_DAILY_METRICS_TABLE ?? 'daily_metrics';
 
-let _client: BigQuery | null = null;
-function bq(): BigQuery {
-  if (!_client) _client = new BigQuery({ projectId: PROJECT_ID });
-  return _client;
+function bq() {
+  return makeBQClient(PROJECT_ID);
 }
 
 const PERIOD_DAYS: Record<Period, number> = {

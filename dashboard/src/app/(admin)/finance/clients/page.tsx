@@ -1,5 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { BigQuery } from '@google-cloud/bigquery';
+import { makeBQClient } from '@/lib/bq';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,7 +28,7 @@ async function fetchClientFinance(): Promise<ClientFinanceRow[]> {
   let bqRows: Array<{ client_id: string; name: string; ad_spend: number }> = [];
 
   try {
-    const bq = new BigQuery({ projectId: PROJECT });
+    const bq = makeBQClient(PROJECT);
     const query = `
       SELECT
         c.client_id,

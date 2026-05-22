@@ -15,6 +15,10 @@ const PROJECT = process.env.GCLOUD_PROJECT ?? 'click-to-acquire';
 const DATASET = 'analytics';
 
 function getBQ(): BigQuery {
+  const credsJson = process.env.GOOGLE_CREDENTIALS_JSON;
+  if (credsJson) {
+    return new BigQuery({ projectId: PROJECT, credentials: JSON.parse(credsJson) });
+  }
   return new BigQuery({ projectId: PROJECT });
 }
 
