@@ -1,0 +1,9 @@
+orgs/
+skills/
+community/
+templates/
+tests/
+bus/
+.claude/
+*.sh
+*.log
