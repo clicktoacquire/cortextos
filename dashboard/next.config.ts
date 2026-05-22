@@ -35,6 +35,18 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   ...(allowedDevOrigins.length > 0 && { allowedDevOrigins }),
+  outputFileTracingExcludes: {
+    '*': [
+      '../../.claude/**',
+      '../.claude/**',
+      '.claude/**',
+      '../../skills/**',
+      '../skills/**',
+      'skills/**',
+      '../../templates/**',
+      '../../community/**',
+    ],
+  },
   async headers() {
     return [
       {
