@@ -4,6 +4,7 @@ import path from 'path';
 import { getFrameworkRoot, getCTXRoot, getAllAgents } from '@/lib/config';
 import { IPCClient } from '@/lib/ipc-client';
 import { getHeartbeat, getHealthStatus } from '@/lib/data/heartbeats';
+import { sql } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,6 +23,30 @@ const VALID_TEMPLATES = ['agent', 'agent-codex', 'orchestrator', 'analyst'];
 export async function GET() {
   try {
     const agents = getAllAgents();
+
+    // On Vercel (no CTX_ROOT filesystem), getAllAgents() returns [].
+    // Fall back to the heartbeats table populated by the Mac mini sync daemon.
+    if (agents.length === 0) {
+      const rows = await sql<{ agent: string; org: string; status: string | null; current_task: string | null; last_heartbeat: string | null }[]>`
+        SELECT agent, org, status, current_task, last_heartbeat FROM heartbeats ORDER BY agent
+      `;
+      const enriched = rows.map((row) => {
+        const hb = row.last_heartbeat
+          ? { last_heartbeat: row.last_heartbeat, status: row.status ?? undefined, current_task: row.current_task ?? undefined }
+          : null;
+        const health = hb ? getHealthStatus(hb as Parameters<typeof getHealthStatus>[0]) : 'down';
+        return {
+          name: row.agent,
+          org: row.org,
+          health,
+          lastHeartbeat: row.last_heartbeat ?? undefined,
+          currentTask: row.current_task ?? undefined,
+          status: row.status ?? undefined,
+        };
+      });
+      return Response.json(enriched);
+    }
+
     const enriched = await Promise.all(
       agents.map(async (agent) => {
         const hb = await getHeartbeat(agent.name);
