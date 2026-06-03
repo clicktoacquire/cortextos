@@ -22,7 +22,6 @@ import {
   IconMessageQuestion,
   IconBulb,
   IconNotes,
-  IconUsers,
   IconBuilding,
   IconReportMoney,
 } from '@tabler/icons-react';
