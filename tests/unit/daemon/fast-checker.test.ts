@@ -17,6 +17,7 @@ function createMockAgent(name = 'test-agent') {
     markBootstrapped: vi.fn(),
     injectMessage: vi.fn().mockReturnValue(true),
     write: vi.fn(),
+    checkMcpSetupWarningOnBoot: vi.fn(), // post-bootstrap MCP-degraded scan (B:F-09 re-scope)
   } as any;
 }
 

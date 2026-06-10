@@ -482,6 +482,7 @@ describe('AgentProcess — CrashLoopPauser (instar-inspired sliding window)', ()
   });
 });
 
+<<<<<<< HEAD
 describe('AgentProcess — spawn-verify (gen-B: bootstrap-completion boundary)', () => {
   it('immediate dead pid → never running, retries the budget → SPAWN-FAILED', async () => {
     vi.useFakeTimers();
@@ -545,5 +546,46 @@ describe('AgentProcess — spawn-verify (gen-B: bootstrap-completion boundary)',
     // A post-bootstrap exit is a crash (crash-recovery), NOT spawn-failed.
     capturedOnExit?.(1, 0);
     expect(ap.getStatus().status).toBe('crashed');
+  });
+});
+
+describe('AgentProcess - Area 4.2 MCP-degraded boot alert (B:F-09 re-scope)', () => {
+  const DEGRADED = '\x1b[38;5;240m⚠ 3 setup issues: settings, MCP, install\x1b[38;5;246m · /doctor\x1b[39m';
+
+  function mk(send: any) {
+    const ap = new AgentProcess('alice', mockEnv, {});
+    ap.setTelegramHandle({ sendMessage: send } as any, '999');
+    return ap;
+  }
+
+  it('degraded boot → ONE alert naming .mcp.json', () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    mk(send).checkMcpSetupWarningOnBoot(DEGRADED);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(String(send.mock.calls[0][1])).toContain('.mcp.json');
+    expect(String(send.mock.calls[0][1])).toMatch(/DEGRADED|MCP/);
+  });
+
+  it('clean boot → zero alerts', () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    mk(send).checkMcpSetupWarningOnBoot('Bootstrap complete. Beginning poll loop. Heartbeat updated.');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('false-positive guard: normal output mentioning "mcp" does NOT alert', () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    mk(send).checkMcpSetupWarningOnBoot('Using mcp tool to fetch data; run /doctor if needed. All MCP servers connected.');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('once-per-incident: re-degraded does NOT re-alert; a clean boot re-arms', () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const ap = mk(send);
+    ap.checkMcpSetupWarningOnBoot(DEGRADED);
+    ap.checkMcpSetupWarningOnBoot(DEGRADED);
+    expect(send).toHaveBeenCalledTimes(1);
+    ap.checkMcpSetupWarningOnBoot('all good, poll loop');
+    ap.checkMcpSetupWarningOnBoot(DEGRADED);
+    expect(send).toHaveBeenCalledTimes(2);
   });
 });

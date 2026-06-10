@@ -66,20 +66,14 @@ export class AgentProcess {
   // (each start() recreates the PTY, but the Telegram handle persists).
   private telegramApi: TelegramAPI | null = null;
   private telegramChatId: string | null = null;
-  // Area 4.4 wedge-detection: a crash-recovery restart re-spawns the PTY but
-  // nothing verifies the --continue session actually RESUMES (the fast-checker
-  // runs waitForBootstrap once per discovery, not per crash-restart). A restart
-  // into a non-responsive / onboarding-wedged session is otherwise undetected.
-  // After each crash-recovery restart we require a heartbeat STRICTLY NEWER than
-  // the restart within wedgeDetectMs; absent => one force-fresh re-restart
-  // (cap=1) => still wedged => ONE operator alert (restart-wedged class).
+  // Area 4.4 wedge-detection
   private wedgeWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
-  private wedgeReRestartUsed = false; // re-restart cap = EXACTLY 1; reset on a fresh heartbeat
-  private lastWedgeAlertAt = 0;       // restart-wedged alert class-dedup (15-min window)
-  // N = 5min fixed (NOT the #621 per-agent staleness module — different PR base;
-  // see DELIVERY for the future unification). Static so tests can shorten it.
+  private wedgeReRestartUsed = false;
+  private lastWedgeAlertAt = 0;
   static wedgeDetectMs = 5 * 60 * 1000;
   static wedgeAlertDedupMs = 15 * 60 * 1000;
+  // Area 4.2 (B:F-09): MCP-degraded boot alert latch
+  private mcpDegradedAlerted = false;
   // Issue #392: tracks whether the most recently built startup prompt consumed
   // a handoff doc marker. start() reads this after spawn to decide whether the
   // daemon should fire the codex-app-server back-online Telegram directly
@@ -589,6 +583,40 @@ export class AgentProcess {
       }
     } catch {
       return '';
+    }
+  }
+
+  // The exact non-fatal warning claude surfaces on a broken .mcp.json (captured
+  // in the repro on v2.1.170): "⚠ N setup issues: …, MCP, … · /doctor". Anchored
+  // on the setup-issues + MCP + /doctor triple so normal output that merely
+  // mentions "mcp" cannot false-positive.
+  private static readonly MCP_SETUP_WARNING_RE = /setup issues:[^\n]*\bMCP\b[^\n]*\/doctor/i;
+
+  /**
+   * Post-bootstrap MCP-degraded surface (Area 4.2, B:F-09 re-scope). A broken
+   * .mcp.json no longer crashes claude — it boots DEGRADED with a non-fatal
+   * "setup issues … MCP … /doctor" warning, leaving the agent running WITHOUT its
+   * MCP tools (a silent-failure class). Called once bootstrap completes: scan the
+   * boot stdout tail and emit ONE operator alert naming .mcp.json. Surface-only:
+   * NO restart/backoff (the agent is alive). Once-per-incident — the latch clears
+   * here on a warning-free boot, so a fixed .mcp.json re-arms for the next time.
+   */
+  checkMcpSetupWarningOnBoot(bootOutput?: string): void {
+    const clean = (bootOutput ?? this.tailStdoutLog(16384)).replace(/\x1b\[[0-9;]*[a-zA-Z]/g, ''); // strip ANSI/TUI codes
+    if (!AgentProcess.MCP_SETUP_WARNING_RE.test(clean)) {
+      this.mcpDegradedAlerted = false; // warning-free boot → recovery, re-arm
+      return;
+    }
+    if (this.mcpDegradedAlerted) return; // already alerted this incident
+    this.mcpDegradedAlerted = true;
+    this.log(`MCP setup issue on boot — running DEGRADED (MCP tools unavailable); check this agent's .mcp.json (claude /doctor for detail)`);
+    if (this.telegramApi && this.telegramChatId) {
+      this.telegramApi
+        .sendMessage(
+          this.telegramChatId,
+          `⚠️ Agent ${this.name} booted DEGRADED: MCP setup issue — its MCP tools are unavailable. Check .mcp.json (run claude /doctor for detail).`,
+        )
+        .catch(() => {});
     }
   }
 
