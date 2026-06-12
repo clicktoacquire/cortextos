@@ -254,7 +254,12 @@ export function isClaudeDirOperation(
   // thing left to vet.
   const canonAgentDir = canonicalizePath(resolve(base));
   const claudeRoot = join(canonAgentDir, '.claude');
-  const target = resolve(canonAgentDir, filePath);
+  // Canonicalize the target too: an absolute file_path reached via a symlinked
+  // prefix (e.g. macOS /var -> /private/var) would otherwise fail containment
+  // against the already-canonical claudeRoot. Live escape symlinks resolve to
+  // their out-of-tree destination here and are caught by the lexical check;
+  // dangling ones survive canonicalization and are caught by the lstat walk.
+  const target = canonicalizePath(resolve(canonAgentDir, filePath));
 
   // Lexical containment within the agent's own .claude/.
   if (target !== claudeRoot && !target.startsWith(claudeRoot + sep)) return false;
