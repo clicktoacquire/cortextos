@@ -204,7 +204,7 @@ export default function LoginPage() {
     }
 
     const body = new URLSearchParams();
-    body.set('csrfToken', csrfTokenRef.current || '');
+    body.set('csrfToken', submitToken || '');
     body.set('username', username);
     body.set('password', password);
     if (totp) body.set('totp_code', totp);

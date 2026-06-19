@@ -11,31 +11,6 @@ import type { User } from './types';
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
-  // Let auth.js infer cookie names from AUTH_URL — on HTTPS it will automatically
-  // use __Secure- prefixed names (__Secure-authjs.csrf-token etc.), which is
-  // required for CSRF validation to pass in a browser. Hardcoding unprefixed names
-  // breaks the CSRF lookup when auth.js is serving HTTPS via Cloudflare tunnel.
-  // Middleware checks both authjs.session-token AND __Secure-authjs.session-token.
-  cookies: {
-    sessionToken: {
-      options: { httpOnly: true, sameSite: 'lax', path: '/' },
-    },
-    csrfToken: {
-      options: { httpOnly: true, sameSite: 'lax', path: '/' },
-    },
-    callbackUrl: {
-      options: { sameSite: 'lax', path: '/' },
-    },
-    pkceCodeVerifier: {
-      options: { httpOnly: true, sameSite: 'lax', path: '/' },
-    },
-    state: {
-      options: { httpOnly: true, sameSite: 'lax', path: '/' },
-    },
-    nonce: {
-      options: { httpOnly: true, sameSite: 'lax', path: '/' },
-    },
-  },
   providers: [
     Credentials({
       name: 'Credentials',
