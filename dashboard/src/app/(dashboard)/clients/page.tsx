@@ -61,12 +61,13 @@ export default async function ClientsPage() {
               <th className="px-4 py-3 text-left text-xs font-medium text-zinc-400 uppercase tracking-wider">Vertical</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-zinc-400 uppercase tracking-wider">Status</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-zinc-400 uppercase tracking-wider">Last Activity</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-400 uppercase tracking-wider">Portal</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-800">
             {clients.length === 0 && !error && (
               <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-zinc-500 text-sm">
+                <td colSpan={5} className="px-4 py-8 text-center text-zinc-500 text-sm">
                   No clients found
                 </td>
               </tr>
@@ -90,6 +91,15 @@ export default async function ClientsPage() {
                   {client.last_activity
                     ? new Date(client.last_activity).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
                     : '—'}
+                </td>
+                <td className="px-4 py-3">
+                  <a
+                    href={`/portal/${client.client_id}/reports`}
+                    className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                    target="_blank"
+                  >
+                    View Portal
+                  </a>
                 </td>
               </tr>
             ))}

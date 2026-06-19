@@ -96,6 +96,23 @@ export default async function ClientDetailPage({
         </dl>
       </div>
 
+      {/* Portal access */}
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-5">
+        <h2 className="text-sm font-medium text-zinc-300 mb-3">Client Portal</h2>
+        <div className="flex items-center gap-4">
+          <a
+            href={`/portal/${id}/reports`}
+            target="_blank"
+            className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 transition-colors"
+          >
+            View Portal Report
+          </a>
+          <span className="text-xs text-zinc-500">
+            Create client login via Settings &rarr; Users or POST /api/client-users
+          </span>
+        </div>
+      </div>
+
       {/* Daily performance table */}
       {performance.length > 0 && (
         <div className="rounded-lg border border-zinc-800 overflow-hidden">
