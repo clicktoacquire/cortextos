@@ -175,7 +175,7 @@ export interface CostEntry {
 
 // -- User / Auth Types --
 
-export type UserRole = 'admin' | 'viewer';
+export type UserRole = 'admin' | 'viewer' | 'client';
 
 export interface User {
   id: number;
@@ -185,6 +185,7 @@ export interface User {
   totp_secret?: string;
   totp_enabled: number; // 0 | 1
   role: UserRole;
+  client_id?: string;
   created_at: string;
 }
 

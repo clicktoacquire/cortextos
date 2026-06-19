@@ -128,6 +128,7 @@ export async function getClientPerformance(clientId: string): Promise<Performanc
     FROM \`${PROJECT}.${DATASET}.daily_metrics\`
     WHERE client_id = @clientId
       AND metric_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      AND entity_type = 'campaign'
     GROUP BY metric_date
     ORDER BY metric_date DESC
     LIMIT 31

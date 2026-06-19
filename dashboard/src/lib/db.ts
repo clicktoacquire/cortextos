@@ -105,6 +105,9 @@ export async function initializeSchema(): Promise<void> {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'admin'
   `;
   await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS client_id TEXT
+  `;
+  await sql`
     CREATE TABLE IF NOT EXISTS password_resets (
       token TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

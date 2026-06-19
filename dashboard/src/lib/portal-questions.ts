@@ -54,6 +54,7 @@ export async function getClientSpend(
       ROUND(SUM(spend), 2) AS spend
     FROM \`${PROJECT}.${DATASET}.daily_metrics\`
     WHERE client_id = @clientId
+      AND entity_type = 'campaign'
       AND metric_date BETWEEN @start AND @end
     GROUP BY metric_date, platform
     ORDER BY metric_date ASC
@@ -96,6 +97,7 @@ export async function getClientRevenue(
       ROUND(SUM(spend), 2) AS spend
     FROM \`${PROJECT}.${DATASET}.daily_metrics\`
     WHERE client_id = @clientId
+      AND entity_type = 'campaign'
       AND metric_date BETWEEN @start AND @end
     GROUP BY metric_date
     ORDER BY metric_date ASC
@@ -134,6 +136,7 @@ export async function getClientCpa(
       SUM(conversions) AS conversions
     FROM \`${PROJECT}.${DATASET}.daily_metrics\`
     WHERE client_id = @clientId
+      AND entity_type = 'campaign'
       AND metric_date BETWEEN @start AND @end
     GROUP BY metric_date
     ORDER BY metric_date ASC
@@ -206,6 +209,7 @@ export async function getClientLeads(
       SUM(conversions) AS leads
     FROM \`${PROJECT}.${DATASET}.daily_metrics\`
     WHERE client_id = @clientId
+      AND entity_type = 'campaign'
       AND metric_date BETWEEN @start AND @end
     GROUP BY metric_date
     ORDER BY metric_date ASC
@@ -253,6 +257,7 @@ export async function getBestCampaign(
       SUM(conversion_value) AS revenue
     FROM \`${PROJECT}.${DATASET}.daily_metrics\`
     WHERE client_id = @clientId
+      AND entity_type = 'campaign'
       AND metric_date BETWEEN @start AND @end
       AND campaign_id IS NOT NULL
     GROUP BY campaign_id
@@ -310,6 +315,7 @@ export async function getWastedSpend(
         SUM(conversions) AS conversions
       FROM \`${PROJECT}.${DATASET}.daily_metrics\`
       WHERE client_id = @clientId
+        AND entity_type = 'campaign'
         AND metric_date BETWEEN @start AND @end
       GROUP BY campaign_id
     )
@@ -554,6 +560,7 @@ export async function getTrackingHealth(
       COUNT(DISTINCT platform) AS platform_count
     FROM \`${PROJECT}.${DATASET}.daily_metrics\`
     WHERE client_id = @clientId
+      AND entity_type = 'campaign'
       AND metric_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
     LIMIT 1
   `;

@@ -179,10 +179,25 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
+  // Client-role routing: restrict client users to their own portal
+  if (hasSession && authSecretForSession) {
+    try {
+      const token = await getToken({ req: request, secret: authSecretForSession });
+      if (token?.role === 'client' && token.client_id) {
+        const clientPortalPrefix = `/portal/${token.client_id}`;
+        if (!pathname.startsWith('/portal/') && !pathname.startsWith('/api/auth')) {
+          return NextResponse.redirect(new URL(`${clientPortalPrefix}/reports`, request.url));
+        }
+        if (pathname.startsWith('/portal/') && !pathname.startsWith(clientPortalPrefix)) {
+          return NextResponse.redirect(new URL(`${clientPortalPrefix}/reports`, request.url));
+        }
+      }
+    } catch { /* token already verified above */ }
+  }
+
   const response = NextResponse.next();
   response.headers.set('Access-Control-Allow-Origin', corsOrigin);
   response.headers.set('Vary', 'Origin');
-  // Standard security headers
   response.headers.set('X-Frame-Options', 'DENY');
   response.headers.set('X-Content-Type-Options', 'nosniff');
   response.headers.set('Referrer-Policy', 'no-referrer');

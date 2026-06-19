@@ -115,6 +115,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           id: String(user.id),
           name: user.username,
           role: user.role ?? 'admin',
+          client_id: user.client_id ?? null,
         };
       },
     }),
@@ -130,6 +131,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (user) {
         token.id = user.id;
         token.role = (user as { role?: string }).role ?? 'admin';
+        token.client_id = (user as { client_id?: string | null }).client_id ?? null;
       }
       return token;
     },
@@ -137,6 +139,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (token.id && session.user) {
         session.user.id = token.id as string;
         (session.user as { role?: string }).role = (token.role as string) ?? 'admin';
+        (session.user as { client_id?: string | null }).client_id = (token.client_id as string | null) ?? null;
       }
       return session;
     },
