@@ -145,6 +145,10 @@ export class TelegramPoller {
         this.netFailures = 0;
         await sleep(this.pollInterval + this.pollJitterMs());
       } catch (err) {
+        if (!this.running) {
+          this.lastExitReason = 'stopped-externally';
+          return;
+        }
         const msg = err instanceof Error ? err.message : String(err);
         const plan = planPollError(msg, this.netFailures);
         if (plan.type === 'conflict') {
