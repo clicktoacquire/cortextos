@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, cpSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, cpSync, rmSync } from 'fs';
 import { join, basename } from 'path';
 import { homedir, tmpdir } from 'os';
 import { spawnSync } from 'child_process';
@@ -220,5 +220,5 @@ function readAgentConfig(agentDir: string): Record<string, any> | null {
 }
 
 function cleanup(dir: string): void {
-  try { spawnSync('rm', ['-rf', dir], { stdio: 'pipe' }); } catch { /* ignore */ }
+  try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
 }

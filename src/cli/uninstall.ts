@@ -34,7 +34,12 @@ export const uninstallCommand = new Command('uninstall')
         stdio: 'pipe',
       });
       if (pm2Result.status === 0 && pm2Result.stdout) {
-        const processes = JSON.parse(pm2Result.stdout);
+        let processes: { name: string }[];
+        try {
+          processes = JSON.parse(pm2Result.stdout);
+        } catch {
+          processes = [];
+        }
         const cortextosProcesses = processes.filter((p: { name: string }) =>
           p.name.startsWith('cortextos-') || p.name.startsWith(`ctx-${instanceId}`),
         );

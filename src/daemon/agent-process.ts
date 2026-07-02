@@ -134,6 +134,7 @@ export class AgentProcess {
   private everBootstrapped = false;
   private spawnAttempts = 0;
   private spawnVerifying = false;
+  private spawnRetryTimer: ReturnType<typeof setTimeout> | null = null;
   /** Settle window (ms) to confirm a spawned pid stays alive — INJECTABLE for tests. */
   static spawnSettleMs = 500;
   /** Settle poll interval (ms) — INJECTABLE for tests. */
@@ -339,7 +340,11 @@ export class AgentProcess {
     this.status = 'starting';
     const backoff = SPAWN_RETRY_BASE_MS * 2 ** (this.spawnAttempts - 1); // 1s, 2s
     this.log(`Pre-bootstrap exit (attempt ${this.spawnAttempts}/${MAX_SPAWN_ATTEMPTS}, ${failureClass}): ${reason} — retrying in ${backoff}ms`);
-    setTimeout(() => {
+    // Store the handle so stop() can cancel a pending retry — without this a
+    // user-initiated stop during the backoff window still re-spawns the agent
+    // (the fire-time guards only run when the timer fires).
+    this.spawnRetryTimer = setTimeout(() => {
+      this.spawnRetryTimer = null;
       if (this.status === 'spawn-failed' || this.stopRequested || this.everBootstrapped) return;
       void this.start();
     }, backoff);
@@ -392,6 +397,10 @@ export class AgentProcess {
     this.clearSessionTimer();
     this.clearBootWatchdog();
     this.clearDailyResetTimer();
+    if (this.spawnRetryTimer) {
+      clearTimeout(this.spawnRetryTimer);
+      this.spawnRetryTimer = null;
+    }
 
     // Capture and null out pty BEFORE any awaits so handleExit() during graceful
     // shutdown doesn't race with us and trigger crash recovery or a double-kill.

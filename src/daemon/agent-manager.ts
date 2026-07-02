@@ -778,7 +778,7 @@ export class AgentManager {
       // — follow-up task_1776054009969_099 tracks migrating to a dedicated
       // singleton or Telegram webhook if the coupling ever causes real
       // operator pain. Non-orchestrator agents skip this entirely.
-      await this.maybeStartActivityChannelPoller(name, org, agentDir, log);
+      await this.maybeStartActivityChannelPoller(name, resolvedOrg, agentDir, log);
     }
   }
 
@@ -914,6 +914,13 @@ export class AgentManager {
       return;
     }
 
+    // Capture identity BEFORE teardown: a queued restart must reuse the same
+    // agentDir/org, not re-run discovery (which can pick the wrong org on
+    // multi-org installs when enabled-agents.json lacks the org field).
+    const stoppedAgentDir = entry.process.getAgentDir();
+    const orgMatch = stoppedAgentDir.match(/[\\/]orgs[\\/]([^\\/]+)[\\/]agents[\\/]/);
+    const stoppedOrg = orgMatch?.[1];
+
     if (entry.poller) entry.poller.stop();
     if (entry.activityPoller) entry.activityPoller.stop();
     entry.checker.stop();
@@ -940,7 +947,7 @@ export class AgentManager {
       }
       this.pendingRestarts.delete(name);
       console.log(`[agent-manager] Honoring queued restart for ${name}`);
-      this.startAgent(name, '').catch(err =>
+      this.startAgent(name, stoppedAgentDir, undefined, stoppedOrg).catch(err =>
         console.error(`[agent-manager] Queued restart failed for ${name}:`, err),
       );
     }

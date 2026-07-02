@@ -465,13 +465,12 @@ async function main(): Promise<void> {
 
   if (message) {
     try {
-      const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
-      await fetch(url, {
+      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: chatId, text: message }),
       });
-    } catch { /* ignore send failures */ }
+    } catch { console.error('crash-alert: telegram send failed'); }
   }
 }
 

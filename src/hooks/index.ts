@@ -14,9 +14,10 @@ import * as crypto from 'crypto';
 export function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer<ArrayBufferLike>[] = [];
+    const timer = setTimeout(() => resolve(Buffer.concat(chunks).toString('utf-8')), 10_000);
     process.stdin.on('data', (chunk: Buffer<ArrayBufferLike>) => chunks.push(chunk));
-    process.stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-    process.stdin.on('error', reject);
+    process.stdin.on('end', () => { clearTimeout(timer); resolve(Buffer.concat(chunks).toString('utf-8')); });
+    process.stdin.on('error', (err) => { clearTimeout(timer); reject(err); });
   });
 }
 

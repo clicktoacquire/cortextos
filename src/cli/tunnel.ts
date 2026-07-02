@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { execSync, spawnSync } from 'child_process';
+import { execSync, execFileSync, spawnSync } from 'child_process';
 import { existsSync, writeFileSync, readFileSync, mkdirSync, chmodSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -141,7 +141,7 @@ function findExistingTunnel(): CloudflaredTunnel | null {
 function createTunnel(): CloudflaredTunnel {
   let output = '';
   try {
-    output = execSync(`cloudflared tunnel create --output json ${TUNNEL_NAME}`, {
+    output = execFileSync('cloudflared', ['tunnel', 'create', '--output', 'json', TUNNEL_NAME], {
       encoding: 'utf-8',
       stdio: 'pipe',
       timeout: 30000,

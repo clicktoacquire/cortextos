@@ -120,7 +120,7 @@ export function autoCommit(projectDir: string, dryRun: boolean = false): AutoCom
   const changedFiles = porcelainOutput
     .split('\n')
     .filter(line => line.trim())
-    .map(line => line.slice(3)); // cut from column 4 (0-indexed col 3)
+    .map(l => { const p = l.slice(3); const i = p.indexOf(' -> '); return i === -1 ? p : p.slice(i + 4); }); // cut path; for renames take the target
 
   const staged: string[] = [];
   const blocked: string[] = [];

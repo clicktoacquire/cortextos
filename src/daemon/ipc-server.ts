@@ -1,6 +1,6 @@
 import { createServer, Server, Socket } from 'net';
 import { existsSync, unlinkSync, chmodSync, readFileSync } from 'fs';
-import { join, resolve as pathResolve } from 'path';
+import { join, resolve as pathResolve, sep } from 'path';
 import type { IPCRequest, IPCResponse, CronSummaryRow, CronDefinition } from '../types/index.js';
 import { AgentManager } from './agent-manager.js';
 import { getIpcPath } from '../utils/paths.js';
@@ -500,8 +500,17 @@ export class IPCServer {
     return new Promise((resolve, reject) => {
       this.server = createServer((socket: Socket) => {
         let data = '';
+        // Bound the accumulator: a client that never sends valid JSON would
+        // otherwise grow this string until the daemon OOMs.
+        const MAX_IPC_MESSAGE_BYTES = 1024 * 1024;
         socket.on('data', (chunk) => {
           data += chunk.toString();
+          if (data.length > MAX_IPC_MESSAGE_BYTES) {
+            console.warn(`[ipc] Dropping connection: message exceeded ${MAX_IPC_MESSAGE_BYTES} bytes without parsing as JSON`);
+            data = '';
+            socket.destroy();
+            return;
+          }
           // Try to parse complete JSON messages
           try {
             const request: IPCRequest = JSON.parse(data);
@@ -672,8 +681,8 @@ export class IPCServer {
             const resolvedDir = pathResolve(d.dir);
             const ctxRoot = process.env.CTX_ROOT ? pathResolve(process.env.CTX_ROOT) : '';
             const cwd = pathResolve(process.cwd());
-            const underCtxRoot = ctxRoot && (resolvedDir === ctxRoot || resolvedDir.startsWith(ctxRoot + '/'));
-            const underCwd = resolvedDir === cwd || resolvedDir.startsWith(cwd + '/');
+            const underCtxRoot = ctxRoot && (resolvedDir === ctxRoot || resolvedDir.startsWith(ctxRoot + sep));
+            const underCwd = resolvedDir === cwd || resolvedDir.startsWith(cwd + sep);
             if (!underCtxRoot && !underCwd) {
               response = { success: false, error: 'Invalid worker dir' };
             } else {

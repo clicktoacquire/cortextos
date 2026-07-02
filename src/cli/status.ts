@@ -19,6 +19,9 @@ export const statusCommand = new Command('status')
       if (response.success) {
         const statuses = response.data as AgentStatus[];
         displayStatuses(statuses);
+      } else {
+        console.error('ERROR:', response.error);
+        process.exit(1);
       }
     } else {
       // Fall back to reading heartbeat files

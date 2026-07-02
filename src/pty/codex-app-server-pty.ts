@@ -432,10 +432,20 @@ export class CodexAppServerPTY {
       });
 
       this._appServerPty = pty;
+      // Startup-phase error detection only: once the socket appears the promise
+      // is settled and 'Error:' in normal agent output must not reject a healthy
+      // server (the substring occurs in benign output; reject-after-settle is
+      // silently swallowed and loses the error signal).
+      let settled = false;
+      const settleReject = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      };
       pty.onData((data) => {
         this._outputBuffer.push(data);
-        if (data.includes('Error:')) {
-          reject(new Error(data.trim()));
+        if (!settled && data.includes('Error:')) {
+          settleReject(new Error(data.trim()));
         }
       });
       pty.onExit(({ exitCode, signal }) => {
@@ -446,7 +456,13 @@ export class CodexAppServerPTY {
         this._onExitHandler?.(exitCode, signal);
       });
 
-      this.waitForSocket().then(resolve, reject);
+      this.waitForSocket().then(
+        () => {
+          settled = true;
+          resolve();
+        },
+        settleReject,
+      );
     });
   }
 
@@ -527,7 +543,11 @@ export class CodexAppServerPTY {
       experimentalRawEvents: false,
       persistExtendedHistory: true,
     });
-    this.setThreadId(started.result!.thread.id);
+    const startedThreadId = started.result?.thread.id;
+    if (!startedThreadId) {
+      throw new Error(`thread/start returned no thread id: ${JSON.stringify(started).slice(0, 300)}`);
+    }
+    this.setThreadId(startedThreadId);
   }
 
   private async findLatestThreadForCwd(): Promise<string | null> {

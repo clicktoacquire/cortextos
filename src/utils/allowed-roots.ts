@@ -183,10 +183,20 @@ function normalizePath(p: string): string {
   return normalized;
 }
 
+// macOS per-user temp dirs live under /var/folders (via /private/var) — a
+// legitimate location for allowed roots despite /var being blocklisted.
+const MACOS_TEMP_RE = /^(\/private)?\/var\/folders\//;
+
 function isSystemBlocklisted(normalizedPath: string): boolean {
+  if (MACOS_TEMP_RE.test(normalizedPath)) return false;
   for (const blocked of SYSTEM_BLOCKLIST) {
     const normalizedBlocked = normalizePath(blocked);
     if (normalizedPath === normalizedBlocked) return true;
+    // Subdirectories of blocklisted dirs are blocked too (/etc/foo when /etc is
+    // blocked) — but NOT for filesystem roots ('/', 'C:/'), which would match
+    // every path and must stay exact-match only.
+    const isFsRoot = normalizedBlocked === '/' || /^[A-Za-z]:\/?$/.test(normalizedBlocked);
+    if (!isFsRoot && normalizedPath.startsWith(normalizedBlocked + '/')) return true;
   }
   return false;
 }

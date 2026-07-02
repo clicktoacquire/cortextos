@@ -36,6 +36,7 @@ export class AgentPTY {
   private config: AgentConfig;
   private onExitHandler: ((exitCode: number, signal?: number) => void) | null = null;
   private spawnFn: SpawnFn | null = null;
+  private startupTimers: ReturnType<typeof setTimeout>[] = [];
 
   constructor(env: CtxEnv, config: AgentConfig, logPath?: string, bootstrapPattern?: string) {
     this.env = env;
@@ -170,22 +171,22 @@ export class AgentPTY {
     // Claude Code shows a "trust this folder?" prompt on first run in a new directory.
     // Auto-accept by sending Enter after the prompt appears.
     // The prompt takes ~3-5s to render; we send Enter at 5s and 8s for reliability.
-    setTimeout(() => {
+    this.startupTimers.push(setTimeout(() => {
       if (this.pty) {
         const recent = this.outputBuffer.getRecent();
         if (recent.includes('trust') || recent.includes('Yes')) {
           this.pty.write('\r');
         }
       }
-    }, 5000);
-    setTimeout(() => {
+    }, 5000).unref());
+    this.startupTimers.push(setTimeout(() => {
       if (this.pty) {
         const recent = this.outputBuffer.getRecent();
         if (recent.includes('trust') || recent.includes('Yes')) {
           this.pty.write('\r');
         }
       }
-    }, 8000);
+    }, 8000).unref());
   }
 
   /**
@@ -296,6 +297,8 @@ export class AgentPTY {
    * hard-restart could never escalate past SIGTERM.
    */
   kill(signal?: string): void {
+    for (const t of this.startupTimers) clearTimeout(t);
+    this.startupTimers = [];
     const pty = this.pty;
     if (pty) {
       this._alive = false;

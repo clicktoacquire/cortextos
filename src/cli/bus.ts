@@ -1654,8 +1654,13 @@ busCommand
       console.error('ERROR: enabled-agents.json not found at', enabledFile);
       process.exit(1);
     }
-    const enabledAgents: Record<string, { enabled: boolean; org?: string }> =
-      JSON.parse(readFileSync(enabledFile, 'utf-8'));
+    let enabledAgents: Record<string, { enabled: boolean; org?: string }>;
+    try {
+      enabledAgents = JSON.parse(readFileSync(enabledFile, 'utf-8'));
+    } catch (err) {
+      console.error('ERROR: Failed to parse enabled-agents.json:', err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
 
     // Filter to enabled agents in this org (if org set)
     const targets = Object.entries(enabledAgents)
