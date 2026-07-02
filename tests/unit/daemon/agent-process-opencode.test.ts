@@ -6,7 +6,7 @@ const mockOpencodePty = {
   spawn: vi.fn().mockResolvedValue(undefined),
   kill: vi.fn(),
   write: vi.fn(),
-  getPid: vi.fn().mockReturnValue(13579),
+  getPid: vi.fn().mockReturnValue(process.pid), // LIVE pid so spawn-verify's isPidAlive probe passes
   isAlive: vi.fn().mockReturnValue(true),
   onExit: vi.fn().mockImplementation((cb: (exitCode: number, signal?: number) => void) => {
     capturedOnExit = cb;
@@ -16,7 +16,7 @@ const mockOpencodePty = {
 
 const mockAgentPty = {
   ...mockOpencodePty,
-  getPid: vi.fn().mockReturnValue(12345),
+  getPid: vi.fn().mockReturnValue(process.pid),
   // CodexAppServerPTY exposes setTelegramHandle; start() calls it when a codex
   // agent has a Telegram handle wired (src/daemon/agent-process.ts).
   setTelegramHandle: vi.fn(),
@@ -124,7 +124,7 @@ describe('AgentProcess opencode runtime', () => {
     await ap.start();
 
     expect(mockOpencodePty.spawn).toHaveBeenCalledWith('fresh', expect.any(String));
-    expect(ap.getStatus().pid).toBe(13579);
+    expect(ap.getStatus().pid).toBe(process.pid); // mock getPid → live pid (spawn-verify)
   });
 
   it('uses opencode session marker for continue mode', async () => {
