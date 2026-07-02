@@ -89,6 +89,22 @@ export async function middleware(request: NextRequest) {
     return response;
   }
 
+  // Portal-only deployments (Vercel): everything that is not the client-portal
+  // surface is ABSENT (404), not merely auth-gated. Admin/fleet routes exist
+  // only on the local deployment. This is the blast-radius boundary: a
+  // compromised cloud deployment can never reach admin APIs because they
+  // 404 before any auth logic runs.
+  if (process.env.PORTAL_ONLY === '1') {
+    const portalAllowed =
+      pathname === '/' ||
+      pathname.startsWith('/portal/') ||
+      pathname.startsWith('/api/portal/') ||
+      pathname.startsWith('/settings/2fa');
+    if (!portalAllowed) {
+      return new NextResponse(null, { status: 404 });
+    }
+  }
+
   // GAP-0030: Verify the NextAuth session token. Previous implementation only
   // checked `request.cookies.has('authjs.session-token')` — a name-only presence
   // check that any attacker could satisfy with `Cookie: authjs.session-token=anything`.
@@ -97,15 +113,18 @@ export async function middleware(request: NextRequest) {
   // verifies the NextAuth JWE using AUTH_SECRET — only sessions actually
   // issued by `lib/auth.ts` pass.
   const authSecretForSession = process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET;
+  // NextAuth v5's getToken guesses secure-vs-plain cookie naming from env
+  // heuristics that misfire on Vercel (it looked for `authjs.session-token`
+  // while the browser held `__Secure-authjs.session-token`, so every valid
+  // session bounced to /login). Detect from the request itself instead.
+  const secureCookie = request.cookies.has('__Secure-authjs.session-token');
   let hasSession = false;
   if (authSecretForSession) {
     try {
       const token = await getToken({
         req: request,
         secret: authSecretForSession,
-        // NextAuth v5 auto-detects the cookie name based on secureCookie;
-        // we rely on that default so this works in both dev (`authjs.session-token`)
-        // and prod (`__Secure-authjs.session-token`).
+        secureCookie,
       });
       hasSession = !!token;
     } catch {
@@ -182,7 +201,7 @@ export async function middleware(request: NextRequest) {
   // Client-role routing: restrict client users to their own portal
   if (hasSession && authSecretForSession) {
     try {
-      const token = await getToken({ req: request, secret: authSecretForSession });
+      const token = await getToken({ req: request, secret: authSecretForSession, secureCookie });
       if (token?.role === 'client' && token.client_id) {
         const clientPortalPrefix = `/portal/${token.client_id}`;
         if (!pathname.startsWith('/portal/') && !pathname.startsWith('/api/auth')) {

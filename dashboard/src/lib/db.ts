@@ -14,6 +14,9 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 export async function initializeSchema(): Promise<void> {
+  // Least-privilege deployments (Vercel portal) run as a Postgres role with no
+  // DDL rights — schema is owned/migrated by the local admin deployment only.
+  if (process.env.DB_SKIP_MIGRATIONS === '1') return;
   await sql`
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY,

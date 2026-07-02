@@ -113,6 +113,48 @@ export default async function ReportsPage({
         </div>
       </div>
 
+      {/* Verdict — answer first, data second (client-portal-ux-v1: "Clients
+          aren't marketers — they want a verdict, not a dashboard.") */}
+      {(() => {
+        const leadPart = leads.lead_count > 0
+          ? `Your ads generated ${leads.lead_count.toLocaleString()} lead${leads.lead_count === 1 ? '' : 's'} in the last ${days} days` +
+            (cpa.avg_cpa > 0 ? ` at ${fmt$(cpa.avg_cpa)} each` : '')
+          : `Your ads spent ${fmt$(spend.spend_total)} in the last ${days} days with no leads recorded yet`;
+        const trendParts: string[] = [];
+        if (leadGrowth.pct_change !== 0) {
+          trendParts.push(`leads ${leadGrowth.pct_change > 0 ? 'up' : 'down'} ${Math.abs(leadGrowth.pct_change)}%`);
+        }
+        if (cpa.pct_change !== 0) {
+          trendParts.push(`cost per lead ${cpa.pct_change > 0 ? 'up' : 'down'} ${Math.abs(cpa.pct_change)}%`);
+        }
+        const trendPart = trendParts.length > 0 ? ` — ${trendParts.join(', ')} vs the prior period` : '';
+        const onTarget = cpaTarget.target_cpa > 0 ? cpaTarget.status : null;
+        const verdictTone =
+          onTarget === 'above' || tracking.tracking_status === 'broken'
+            ? 'border-amber-500/40 bg-amber-500/5'
+            : 'border-emerald-500/30 bg-emerald-500/5';
+        const bottomLine =
+          tracking.tracking_status === 'broken'
+            ? 'Heads up: conversion tracking needs attention, so these numbers may undercount results.'
+            : onTarget === 'above'
+              ? `Cost per lead is above the ${fmt$(cpaTarget.target_cpa)} target — this is where our optimization work is focused right now.`
+              : onTarget === 'below' || onTarget === 'on_target'
+                ? `Cost per lead is ${onTarget === 'below' ? 'beating' : 'on'} the ${fmt$(cpaTarget.target_cpa)} target.`
+                : pace.goal_value > 0
+                  ? `You're ${pace.pct_to_goal}% of the way to this month's ${pace.goal_type} goal with ${pace.days_remaining} days left.`
+                  : '';
+        return (
+          <div className={`rounded-lg border p-5 ${verdictTone}`}>
+            <p className="text-xs uppercase tracking-wider text-zinc-500 mb-2">The bottom line</p>
+            <p className="text-lg text-white leading-relaxed">
+              {leadPart}
+              {trendPart}.
+            </p>
+            {bottomLine && <p className="text-sm text-zinc-400 mt-2">{bottomLine}</p>}
+          </div>
+        );
+      })()}
+
       {/* KPI Cards — Row 1 */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <KpiCard label="Total Spend" value={fmt$(spend.spend_total)} />
