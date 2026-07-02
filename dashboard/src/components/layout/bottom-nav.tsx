@@ -20,6 +20,7 @@ import {
   IconClock,
   IconTarget,
   IconX,
+  IconDatabase,
   IconNotes,
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
@@ -40,6 +41,7 @@ const morePages = [
   { label: 'Workflows', href: '/workflows', icon: IconClock },
   { label: 'Strategy', href: '/strategy', icon: IconTarget },
   { label: 'Experiments', href: '/experiments', icon: IconFlask },
+  { label: 'Warehouse', href: '/warehouse', icon: IconDatabase },
   { label: 'Skills', href: '/skills', icon: IconPuzzle },
   { label: 'Settings', href: '/settings', icon: IconSettings },
 ];

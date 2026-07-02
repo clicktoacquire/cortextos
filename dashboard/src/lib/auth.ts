@@ -1,52 +1,24 @@
 // cortextOS Dashboard - NextAuth v5 configuration
-// Credentials provider backed by SQLite users table
+// Credentials provider backed by Postgres users table
 
 import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
-import { db } from './db';
-import { checkRateLimit, resetRateLimit } from './rate-limit';
+import { sql } from './db';
+import { checkRateLimit, resetRateLimit, recordFailedLogin } from './rate-limit';
+import { verifyTurnstile } from './turnstile';
 import type { User } from './types';
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
-  // Force simple cookie names without __Secure- / __Host- prefixes.
-  // NextAuth v5 auto-enables these for HTTPS (including Cloudflare tunnels via
-  // X-Forwarded-Proto), but tunnel proxies may not forward Secure-prefixed
-  // cookies reliably. The middleware checks for authjs.session-token, so this
-  // must stay consistent.
-  cookies: {
-    sessionToken: {
-      name: 'authjs.session-token',
-      options: { httpOnly: true, sameSite: 'lax', path: '/', secure: process.env.NODE_ENV === 'production' },
-    },
-    csrfToken: {
-      name: 'authjs.csrf-token',
-      options: { httpOnly: true, sameSite: 'lax', path: '/', secure: process.env.NODE_ENV === 'production' },
-    },
-    callbackUrl: {
-      name: 'authjs.callback-url',
-      options: { sameSite: 'lax', path: '/', secure: process.env.NODE_ENV === 'production' },
-    },
-    pkceCodeVerifier: {
-      name: 'authjs.pkce.code_verifier',
-      options: { httpOnly: true, sameSite: 'lax', path: '/', secure: process.env.NODE_ENV === 'production' },
-    },
-    state: {
-      name: 'authjs.state',
-      options: { httpOnly: true, sameSite: 'lax', path: '/', secure: process.env.NODE_ENV === 'production' },
-    },
-    nonce: {
-      name: 'authjs.nonce',
-      options: { httpOnly: true, sameSite: 'lax', path: '/', secure: process.env.NODE_ENV === 'production' },
-    },
-  },
   providers: [
     Credentials({
       name: 'Credentials',
       credentials: {
         username: { label: 'Username', type: 'text' },
         password: { label: 'Password', type: 'password' },
+        totp_code: { label: 'Authenticator Code', type: 'text' },
+        turnstileToken: { label: 'Turnstile', type: 'text' },
       },
       async authorize(credentials, request) {
         // Security (H8): Rate limit auth attempts to prevent brute force.
@@ -59,33 +31,66 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           // CF-Connecting-IP is set by Cloudflare and is not spoofable from outside CF
           : (headers?.get('x-real-ip') ?? headers?.get('cf-connecting-ip') ?? '0.0.0.0');
 
-        const { allowed } = checkRateLimit(ip);
+        const { allowed } = await checkRateLimit(ip);
         if (!allowed) {
           throw new Error('Too many attempts. Please try again later.');
         }
 
         if (!credentials?.username || !credentials?.password) return null;
 
+        // Turnstile verification (bypassed when TURNSTILE_SECRET_KEY not set)
+        const turnstileOk = await verifyTurnstile(credentials.turnstileToken as string | undefined);
+        if (!turnstileOk) {
+          throw new Error('CAPTCHA verification failed. Please try again.');
+        }
+
         // Seed admin user on first auth attempt if no users exist
         await seedAdminUser();
 
-        const user = db
-          .prepare('SELECT * FROM users WHERE username = ?')
-          .get(credentials.username as string) as User | undefined;
-        if (!user) return null;
+        const [user] = await sql<User[]>`SELECT * FROM users WHERE username = ${credentials.username as string}`;
+        if (!user) {
+          await recordFailedLogin(ip, credentials.username as string);
+          return null;
+        }
 
         const valid = await bcrypt.compare(
           credentials.password as string,
           user.password_hash
         );
-        if (!valid) return null;
+        if (!valid) {
+          await recordFailedLogin(ip, credentials.username as string);
+          return null;
+        }
+
+        // TOTP verification (only when enabled)
+        if (user.totp_enabled) {
+          const code = ((credentials as Record<string, unknown>).totp_code as string | undefined)?.trim();
+          if (!code) return null;
+
+          const { verifyTotp } = await import('./totp');
+          const totpValid = user.totp_secret
+            ? verifyTotp(code, user.totp_secret)
+            : false;
+
+          if (!totpValid) {
+            // Check one-time recovery codes
+            const { checkAndConsumeRecoveryCode } = await import('./totp');
+            const recovered = await checkAndConsumeRecoveryCode(user.id, code);
+            if (!recovered) {
+              await recordFailedLogin(ip, credentials.username as string);
+              return null;
+            }
+          }
+        }
 
         // Auth successful — reset rate limit counter
-        resetRateLimit(ip);
+        await resetRateLimit(ip);
 
         return {
           id: String(user.id),
           name: user.username,
+          role: user.role ?? 'admin',
+          client_id: user.client_id ?? null,
         };
       },
     }),
@@ -100,12 +105,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     jwt({ token, user }) {
       if (user) {
         token.id = user.id;
+        token.role = (user as { role?: string }).role ?? 'admin';
+        token.client_id = (user as { client_id?: string | null }).client_id ?? null;
       }
       return token;
     },
     session({ session, token }) {
       if (token.id && session.user) {
         session.user.id = token.id as string;
+        (session.user as { role?: string }).role = (token.role as string) ?? 'admin';
+        (session.user as { client_id?: string | null }).client_id = (token.client_id as string | null) ?? null;
       }
       return session;
     },
@@ -117,14 +126,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
 /** Seed admin user from env vars, or sync password if SYNC_ADMIN_PASSWORD=true */
 export async function seedAdminUser(): Promise<void> {
-  const row = db
-    .prepare('SELECT COUNT(*) as count FROM users')
-    .get() as { count: number };
+  const [row] = await sql<{ count: string }[]>`SELECT COUNT(*) as count FROM users`;
+  const count = Number(row?.count ?? 0);
 
   // Early return: users already exist and no password sync requested.
   // Do NOT validate ADMIN_PASSWORD here — existing deployments may not have it set,
   // and we don't need it when there is nothing to seed or sync.
-  if (row.count > 0 && process.env.SYNC_ADMIN_PASSWORD !== 'true') {
+  if (count > 0 && process.env.SYNC_ADMIN_PASSWORD !== 'true') {
     return;
   }
 
@@ -141,18 +149,16 @@ export async function seedAdminUser(): Promise<void> {
     throw new Error('ADMIN_PASSWORD is a known default. Set a strong password in .env.local');
   }
 
-  if (row.count > 0) {
+  if (count > 0) {
     // Opt-in password sync: only update stored hash when SYNC_ADMIN_PASSWORD=true.
     // This prevents the dashboard from silently overwriting a password that was
     // changed through the UI on every restart.
-    const user = db
-      .prepare('SELECT password_hash FROM users WHERE username = ?')
-      .get(username) as { password_hash: string } | undefined;
+    const [user] = await sql<{ password_hash: string }[]>`SELECT password_hash FROM users WHERE username = ${username}`;
     if (user) {
       const matches = await bcrypt.compare(password, user.password_hash);
       if (!matches) {
         const hash = await bcrypt.hash(password, 12);
-        db.prepare('UPDATE users SET password_hash = ? WHERE username = ?').run(hash, username);
+        await sql`UPDATE users SET password_hash = ${hash} WHERE username = ${username}`;
         console.log(`[auth] Admin password updated from environment (SYNC_ADMIN_PASSWORD=true)`);
       }
     }
@@ -160,10 +166,6 @@ export async function seedAdminUser(): Promise<void> {
   }
 
   const hash = await bcrypt.hash(password, 12);
-  db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(
-    username,
-    hash
-  );
-
+  await sql`INSERT INTO users (username, password_hash) VALUES (${username}, ${hash})`;
   console.log(`[auth] Seeded admin user: ${username}`);
 }

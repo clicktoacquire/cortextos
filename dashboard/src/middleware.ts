@@ -15,6 +15,7 @@ function buildAllowedOrigins(): string[] {
   const staticOrigins = ['http://localhost:3000', 'http://localhost:3001'];
   const envCandidates: Array<[string, string | undefined]> = [
     ['NEXTAUTH_URL', process.env.NEXTAUTH_URL],
+    ['AUTH_URL', process.env.AUTH_URL],
     ['DASHBOARD_URL', process.env.DASHBOARD_URL],
     ['MOBILE_APP_ORIGIN', process.env.MOBILE_APP_ORIGIN],
   ];
@@ -75,6 +76,8 @@ export async function middleware(request: NextRequest) {
   // watchdogs) without requiring a session cookie. Auth-gating defeats the purpose.
   if (
     pathname.startsWith('/login') ||
+    pathname.startsWith('/forgot-password') ||
+    pathname.startsWith('/reset-password') ||
     pathname.startsWith('/api/auth') ||
     pathname.startsWith('/_next') ||
     pathname === '/favicon.ico' ||
@@ -156,7 +159,14 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  if (!hasSession && !hasBearerToken) {
+  // E2E smoke-test bypass (checked against env var — not a hardcoded secret)
+  const e2eToken = request.headers.get('x-e2e-token');
+  const hasE2EToken =
+    process.env.E2E_TOKEN !== undefined &&
+    process.env.E2E_TOKEN.length > 0 &&
+    e2eToken === process.env.E2E_TOKEN;
+
+  if (!hasSession && !hasBearerToken && !hasE2EToken) {
     // For API routes, return 401 instead of redirect
     if (pathname.startsWith('/api/')) {
       const res = NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -169,10 +179,25 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
+  // Client-role routing: restrict client users to their own portal
+  if (hasSession && authSecretForSession) {
+    try {
+      const token = await getToken({ req: request, secret: authSecretForSession });
+      if (token?.role === 'client' && token.client_id) {
+        const clientPortalPrefix = `/portal/${token.client_id}`;
+        if (!pathname.startsWith('/portal/') && !pathname.startsWith('/api/auth')) {
+          return NextResponse.redirect(new URL(`${clientPortalPrefix}/reports`, request.url));
+        }
+        if (pathname.startsWith('/portal/') && !pathname.startsWith(clientPortalPrefix)) {
+          return NextResponse.redirect(new URL(`${clientPortalPrefix}/reports`, request.url));
+        }
+      }
+    } catch { /* token already verified above */ }
+  }
+
   const response = NextResponse.next();
   response.headers.set('Access-Control-Allow-Origin', corsOrigin);
   response.headers.set('Vary', 'Origin');
-  // Standard security headers
   response.headers.set('X-Frame-Options', 'DENY');
   response.headers.set('X-Content-Type-Options', 'nosniff');
   response.headers.set('Referrer-Policy', 'no-referrer');

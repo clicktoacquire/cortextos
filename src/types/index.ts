@@ -158,6 +158,13 @@ export interface AgentConfig {
   max_session_seconds?: number;
   max_crashes_per_day?: number;
   /**
+   * Seconds to wait for the agent to bootstrap (show ready-for-input signal)
+   * after spawn. If the agent hasn't bootstrapped within this window, the
+   * daemon kills it, arms .force-fresh, and restarts. Catches MCP connection
+   * hangs and other init-time deadlocks. Default: 300 (5 minutes). Set 0 to disable.
+   */
+  boot_timeout_seconds?: number;
+  /**
    * Sliding-window crash-loop detector. When N crashes occur within the window,
    * the agent auto-pauses (status: 'halted') instead of retrying. Absent = legacy
    * daily counter only.
@@ -788,7 +795,11 @@ export interface AgentInfo {
 
 export interface AgentStatus {
   name: string;
-  status: 'running' | 'stopped' | 'crashed' | 'starting' | 'halted';
+  // 'spawn-failed': the PTY could not be spawned (e.g. posix_spawnp / OS
+  // resource exhaustion) and retries were exhausted — the agent is NOT running
+  // and was never bootstrapped. Registry truth that replaces the gen-B lie
+  // where a corpse spawn was reported as 'running'.
+  status: 'running' | 'stopped' | 'crashed' | 'starting' | 'halted' | 'spawn-failed';
   pid?: number;
   uptime?: number; // seconds
   lastHeartbeat?: string;

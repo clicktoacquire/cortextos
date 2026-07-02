@@ -55,6 +55,9 @@ const originalCtxRoot = process.env.CTX_ROOT;
 const originalFrameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
 const originalAgentName = process.env.CTX_AGENT_NAME;
 const originalInstanceId = process.env.CTX_INSTANCE_ID;
+const originalAgentDir = process.env.CTX_AGENT_DIR;
+const originalProjectRoot = process.env.CTX_PROJECT_ROOT;
+const originalOrg = process.env.CTX_ORG;
 
 /** The agent whose crons.json we write in the test setup */
 const TEST_AGENT = 'boris';
@@ -103,8 +106,11 @@ beforeEach(() => {
 
   process.env.CTX_ROOT = tmpRoot;
   process.env.CTX_FRAMEWORK_ROOT = frameworkRoot;
+  process.env.CTX_PROJECT_ROOT = frameworkRoot;
   process.env.CTX_AGENT_NAME = TEST_AGENT;
   process.env.CTX_INSTANCE_ID = 'default';
+  delete process.env.CTX_AGENT_DIR;
+  delete process.env.CTX_ORG;
 });
 
 afterEach(() => {
@@ -120,6 +126,15 @@ afterEach(() => {
 
   if (originalInstanceId !== undefined) process.env.CTX_INSTANCE_ID = originalInstanceId;
   else delete process.env.CTX_INSTANCE_ID;
+
+  if (originalAgentDir !== undefined) process.env.CTX_AGENT_DIR = originalAgentDir;
+  else delete process.env.CTX_AGENT_DIR;
+
+  if (originalProjectRoot !== undefined) process.env.CTX_PROJECT_ROOT = originalProjectRoot;
+  else delete process.env.CTX_PROJECT_ROOT;
+
+  if (originalOrg !== undefined) process.env.CTX_ORG = originalOrg;
+  else delete process.env.CTX_ORG;
 
   try { rmSync(tmpRoot, { recursive: true }); } catch { /* ignore */ }
   try { rmSync(frameworkRoot, { recursive: true }); } catch { /* ignore */ }

@@ -5,6 +5,8 @@ import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
 import { ensureDir } from '../utils/atomic.js';
+import { collectPendingAlerts, formatSpawnFailureAlert } from './spawn-failure-alerter.js';
+import { runStallDetector, SCAN_INTERVAL_MS } from './stall-detector.js';
 
 // Each fast-checker registers a process-level SIGUSR1 handler (see
 // fast-checker.ts:102). With >10 active agents the default Node listener cap
@@ -183,6 +185,35 @@ function sendCrashLoopAlertBestEffort(
 }
 
 /**
+ * Drain pending fleet-wide spawn-failure alerts (gen-B) and send ONE operator
+ * Telegram per failure-class/window — naming the affected-agent count, not
+ * per-agent/per-retry spam. Best-effort; logs the headline if no operator chat.
+ */
+function sendSpawnFailureAlertsBestEffort(frameworkRoot: string): void {
+  const alerts = collectPendingAlerts();
+  if (alerts.length === 0) return;
+  const creds = getOperatorChatCreds(frameworkRoot);
+  for (const a of alerts) {
+    const message = formatSpawnFailureAlert(a);
+    if (!creds) {
+      console.error('[daemon] ' + message.split('\n')[0] + ' (no operator chat configured)');
+      continue;
+    }
+    try {
+      const r = spawnSync('curl', [
+        '-s', '--max-time', '3', '-X', 'POST',
+        `https://api.telegram.org/bot${creds.botToken}/sendMessage`,
+        '-d', `chat_id=${creds.chatId}`,
+        '--data-urlencode', `text=${message}`,
+      ], { timeout: TELEGRAM_SEND_TIMEOUT_MS, stdio: 'pipe' });
+      console.error(r.status === 0
+        ? `[daemon] Spawn-failure alert sent to operator (${a.affectedCount} agent(s), ${a.failureClass})`
+        : '[daemon] Spawn-failure alert send failed (non-fatal)');
+    } catch { /* non-fatal */ }
+  }
+}
+
+/**
  * Shared fatal-error handler for both uncaughtException and
  * unhandledRejection. Performs marker writes + crash recording + optional
  * telegram alert, then optionally exits. Stays fully synchronous so it
@@ -220,6 +251,8 @@ function handleFatal(
 class Daemon {
   private agentManager: AgentManager | null = null;
   private ipcServer: IPCServer | null = null;
+  private spawnAlertTimer: NodeJS.Timeout | null = null;
+  private stallDetectorTimer: NodeJS.Timeout | null = null;
   private instanceId: string;
   private ctxRoot: string;
 
@@ -266,11 +299,43 @@ class Daemon {
     // Discover and start agents
     await this.agentManager.discoverAndStart();
 
+    // Drain the boot-batch spawn-failure alerts (gen-B): if N agents failed to
+    // spawn during discovery, the operator gets ONE alert naming the count.
+    sendSpawnFailureAlertsBestEffort(frameworkRoot);
+    // And periodically thereafter for runtime respawn failures (deduped per
+    // class/window by the alerter, so this never spams).
+    this.spawnAlertTimer = setInterval(
+      () => sendSpawnFailureAlertsBestEffort(frameworkRoot),
+      60_000,
+    );
+    this.spawnAlertTimer.unref?.();
+
+    // Stall detector — catches outbound-frozen PTYs (auto-compact wedge).
+    // Soft-restarts agents whose cron fires keep advancing while
+    // outbound-messages.jsonl stops growing. Per-agent disable via
+    // {agentDir}/config.json: { "stall_detector_disabled": true }.
+    const agentManagerForStall = this.agentManager;
+    this.stallDetectorTimer = setInterval(() => {
+      void runStallDetector({
+        ctxRoot: this.ctxRoot,
+        agentDirs: agentManagerForStall.getAgentDirs(),
+        restartAgent: async (name, reason) => {
+          console.log(`[stall-detector] Soft-restarting ${name}: ${reason}`);
+          await agentManagerForStall.restartAgent(name);
+        },
+      }).catch((err) => {
+        console.error('[stall-detector] scan failed:', err);
+      });
+    }, SCAN_INTERVAL_MS);
+    this.stallDetectorTimer.unref?.();
+
     console.log(`[daemon] Running (pid: ${process.pid})`);
 
     // Handle shutdown signals
     const shutdown = async () => {
       console.log('[daemon] Shutting down...');
+      if (this.spawnAlertTimer) { clearInterval(this.spawnAlertTimer); this.spawnAlertTimer = null; }
+      if (this.stallDetectorTimer) { clearInterval(this.stallDetectorTimer); this.stallDetectorTimer = null; }
       try {
         if (this.agentManager) {
           await this.agentManager.stopAll();

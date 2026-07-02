@@ -29,6 +29,7 @@ import {
 } from '@/components/shared';
 import { IconPencil, IconFile, IconPhoto, IconFileText, IconCode } from '@tabler/icons-react';
 import { DeliverablePreview } from '@/components/tasks/deliverable-preview';
+import { renderMarkdown } from '@/lib/render-markdown';
 import type { Task, TaskOutput, TaskStatus, TaskPriority } from '@/lib/types';
 
 export interface TaskDetailSheetProps {
@@ -290,7 +291,7 @@ export function TaskDetailSheet({
           ) : task.description ? (
             <div>
               <p className="text-sm text-muted-foreground mb-1">Description</p>
-              <p className="text-sm whitespace-pre-wrap">{task.description}</p>
+              <div className="text-sm">{renderMarkdown(task.description)}</div>
             </div>
           ) : null}
 
@@ -312,7 +313,42 @@ export function TaskDetailSheet({
               <Separator />
               <div>
                 <p className="text-sm text-muted-foreground mb-1">Notes</p>
-                <p className="text-sm whitespace-pre-wrap">{task.notes}</p>
+                <div className="text-sm">{renderMarkdown(task.notes)}</div>
+              </div>
+            </>
+          )}
+
+          {/* Deliverables section — visible when require_deliverables is enabled */}
+          {!editing && deliverablesEnabled && (
+            <>
+              <Separator />
+              <div>
+                <p className="text-sm text-muted-foreground mb-2">
+                  Deliverables{outputs.length > 0 && ` (${outputs.length})`}
+                </p>
+                {outputs.length === 0 ? (
+                  <p className="text-sm text-muted-foreground italic">No deliverables attached.</p>
+                ) : (
+                  <div className="space-y-1">
+                    {outputs.map((output, idx) => {
+                      const Icon = getOutputIcon(output.value);
+                      const filename = output.value.split('/').pop() ?? output.value;
+                      return (
+                        <button
+                          key={idx}
+                          onClick={() => setPreviewOutput(output)}
+                          className="group flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted/50 transition-colors cursor-pointer"
+                        >
+                          <Icon size={16} className="shrink-0 text-primary" />
+                          <div className="min-w-0 flex-1">
+                            <p className="font-medium text-sm text-primary break-words group-hover:underline">{output.label ?? filename}</p>
+                            <p className="text-xs text-muted-foreground break-all">{filename}</p>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </>
           )}

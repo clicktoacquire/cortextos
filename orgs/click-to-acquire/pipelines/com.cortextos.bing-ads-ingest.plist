@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cortextos.bing-ads-ingest</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/robert/cortextos/orgs/click-to-acquire/pipelines/bing-ads-ingest.sh</string>
+    </array>
+
+    <!-- 06:00 America/New_York = 10:00 UTC (EST) / 11:00 UTC (EDT) -->
+    <!-- TZ=America/New_York in EnvironmentVariables makes launchd fire in local time -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/robert/cortextos/orgs/click-to-acquire/pipelines/logs/bing-ads-ingest/launchd-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/robert/cortextos/orgs/click-to-acquire/pipelines/logs/bing-ads-ingest/launchd-stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/Users/robert/.local/bin:/Users/robert/.nvm/versions/node/current/bin</string>
+        <key>HOME</key>
+        <string>/Users/robert</string>
+        <key>TZ</key>
+        <string>America/New_York</string>
+        <key>GOOGLE_APPLICATION_CREDENTIALS</key>
+        <string>/Users/robert/.cortextos/secrets/bigquery-key.json</string>
+    </dict>
+
+    <!-- Restart automatically if the job crashes -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- Run immediately if the machine was asleep at fire time -->
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

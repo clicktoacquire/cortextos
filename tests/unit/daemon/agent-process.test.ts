@@ -7,7 +7,7 @@ const mockPty = {
   spawn: vi.fn().mockResolvedValue(undefined),
   kill: vi.fn(),
   write: vi.fn(),
-  getPid: vi.fn().mockReturnValue(12345),
+  getPid: vi.fn().mockReturnValue(process.pid), // a LIVE pid so spawn-verify's isPidAlive() passes
   isAlive: vi.fn().mockReturnValue(true),
   onExit: vi.fn().mockImplementation((cb: (exitCode: number, signal?: number) => void) => {
     capturedOnExit = cb;
@@ -79,7 +79,7 @@ vi.mock('fs', async () => {
   };
 });
 
-const { AgentProcess } = await import('../../../src/daemon/agent-process.js');
+const { AgentProcess, _resetUnhaltBatch } = await import('../../../src/daemon/agent-process.js');
 
 const mockEnv = {
   instanceId: 'test',
@@ -92,6 +92,9 @@ const mockEnv = {
 };
 
 beforeEach(() => {
+  // Default: skip the spawn settle window so healthy boots are instant in tests.
+  // Corpse tests that need the window set it explicitly.
+  AgentProcess.spawnSettleMs = 0;
   capturedOnExit = null;
   mockPty.spawn.mockClear();
   mockPty.kill.mockClear();
@@ -155,6 +158,7 @@ describe('AgentProcess - BUG-011 fix (stop awaits PTY exit)', () => {
     await ap.start();
     expect(ap.getStatus().status).toBe('running');
 
+    ap.markBootstrapped(); // a crash is post-bootstrap by definition (spawn-verify boundary)
     // Fire the exit handler WITHOUT calling stop() first — simulates a real crash
     capturedOnExit!(1, 0);
 
@@ -168,6 +172,7 @@ describe('AgentProcess - BUG-011 fix (stop awaits PTY exit)', () => {
     await ap.start();
     expect(ap.getStatus().status).toBe('running');
 
+    ap.markBootstrapped(); // post-bootstrap crash (spawn-verify boundary)
     // Fire exit handler WITHOUT calling stop() first — simulates a real crash.
     capturedOnExit!(1, 0);
 
@@ -224,6 +229,7 @@ describe('AgentProcess - BUG-011 fix (stop awaits PTY exit)', () => {
 
     const ap = new AgentProcess('alice', mockEnv, {});
     await ap.start();
+    ap.markBootstrapped(); // post-bootstrap crash (spawn-verify boundary)
     capturedOnExit!(1, 0);
 
     expect(ap.getStatus().status).toBe('crashed');
@@ -268,6 +274,65 @@ describe('AgentProcess - BUG-011 fix (stop awaits PTY exit)', () => {
     // the PTY dies must already see the marker, or it classifies a false crash.
     const markerWriteOrder = fsMocks.writeFileSync.mock.invocationCallOrder[writeIdx];
     expect(markerWriteOrder).toBeLessThan(stopSpy.mock.invocationCallOrder[0]);
+  });
+
+  // Q1 (Area-4): codex agents' session-cap rollover routes through this SAME
+  // generic sessionRefresh() — the max_session timer (agent-process.ts) calls it
+  // for ALL runtimes, and codex-app-server-pty has no own rollover path — so the
+  // marker-before-stop ordering above already covers codex. (A codex-runtime
+  // instantiation can't be unit-driven here without mocking CodexAppServerPTY; the
+  // coverage is the shared-path code-read, documented in DELIVERY.)
+});
+
+describe('AgentProcess - Area 4.4 wedge-detection (mechanism B)', () => {
+  // A crash-recovery restart re-spawns the PTY; mechanism B then requires a
+  // heartbeat STRICTLY NEWER than the restart within wedgeDetectMs. Present =>
+  // resumed; absent => one force-fresh re-restart (cap=1) => still absent => ONE alert.
+  function heartbeatAt(ms: number) {
+    fsMocks.existsSync.mockImplementation((p: any) => String(p).endsWith('heartbeat.json'));
+    fsMocks.readFileSync.mockImplementation((p: any) =>
+      String(p).endsWith('heartbeat.json') ? JSON.stringify({ last_heartbeat: new Date(ms).toISOString() }) : '',
+    );
+  }
+
+  it('RESUMES (heartbeat newer than restart) → no force-fresh, no alert', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1_000_000);
+    AgentProcess.wedgeDetectMs = 2000;
+    try {
+      const ap = new AgentProcess('alice', mockEnv, {});
+      await ap.start();
+      ap.markBootstrapped(); // post-bootstrap crash (spawn-verify boundary)
+      capturedOnExit?.(1, 0);                   // unintentional exit → crash-recovery
+      await vi.advanceTimersByTimeAsync(5000);  // backoff → restart (restartAt ≈ 1_005_000)
+      heartbeatAt(1_006_000);                   // a heartbeat AFTER the restart
+      fsMocks.writeFileSync.mockClear();
+      await vi.advanceTimersByTimeAsync(2500);  // wedge window elapses
+      const forcedFresh = fsMocks.writeFileSync.mock.calls.some((c: any) => String(c[0]).endsWith('.force-fresh'));
+      expect(forcedFresh).toBe(false);
+    } finally { AgentProcess.wedgeDetectMs = 5 * 60 * 1000; vi.useRealTimers(); }
+  });
+
+  it('WEDGED (no heartbeat) → force-fresh re-restart (cap=1) → still wedged → ONE alert', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1_000_000);
+    AgentProcess.wedgeDetectMs = 2000;
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    try {
+      const ap = new AgentProcess('alice', mockEnv, {});
+      ap.setTelegramHandle({ sendMessage } as any, '12345');
+      await ap.start();
+      ap.markBootstrapped(); // post-bootstrap crash (spawn-verify boundary)
+      vi.spyOn(ap, 'stop').mockResolvedValue(); // the wedge re-restart's stop() resolves (mock PTY never auto-exits)
+      // heartbeat NEVER appears → existsSync stays false (beforeEach default) → wedged
+      capturedOnExit?.(1, 0);
+      await vi.advanceTimersByTimeAsync(5000);  // restart #1 + arm watchdog
+      fsMocks.writeFileSync.mockClear();
+      await vi.advanceTimersByTimeAsync(2500);  // 1st wedge window → force-fresh + re-restart
+      const ff = fsMocks.writeFileSync.mock.calls.filter((c: any) => String(c[0]).endsWith('.force-fresh'));
+      expect(ff.length).toBe(1);                // EXACTLY one force-fresh
+      await vi.advanceTimersByTimeAsync(3000);  // retry restart + 2nd wedge window → ALERT
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      expect(String(sendMessage.mock.calls[0][1])).toMatch(/RESTART-WEDGED/);
+    } finally { AgentProcess.wedgeDetectMs = 5 * 60 * 1000; vi.useRealTimers(); }
   });
 });
 
@@ -374,6 +439,7 @@ describe('AgentProcess — CrashLoopPauser (instar-inspired sliding window)', ()
       crash_window: { seconds: 60, max_crashes: 3 },
     });
     await ap.start();
+    ap.markBootstrapped(); // these are post-bootstrap crashes (spawn-verify boundary); everBootstrapped latches
 
     // Fire 3 crashes in rapid succession (well within the 60s window).
     capturedOnExit!(1, 0);
@@ -401,6 +467,7 @@ describe('AgentProcess — CrashLoopPauser (instar-inspired sliding window)', ()
       max_crashes_per_day: 5,
     });
     await ap.start();
+    ap.markBootstrapped(); // post-bootstrap crashes (spawn-verify boundary)
 
     // 3 crashes — without crash_window, these are just normal crash recovery
     for (let i = 0; i < 3; i++) {
@@ -464,5 +531,287 @@ describe('AgentProcess - onboarding marker (do not auto-write .onboarded on hear
     const prompt = mockPty.spawn.mock.calls[0]?.[1] ?? '';
     expect(prompt).not.toContain('FIRST BOOT');
     expect(prompt).not.toContain('complete the onboarding protocol');
+  });
+});
+
+describe('AgentProcess — spawn-verify (gen-B: bootstrap-completion boundary)', () => {
+  it('immediate dead pid → never running, retries the budget → SPAWN-FAILED', async () => {
+    vi.useFakeTimers();
+    mockPty.getPid.mockReturnValue(2_000_000_000); // not alive (posix_spawnp corpse)
+    try {
+      const ap = new AgentProcess('alice', mockEnv, {});
+      void ap.start();
+      await vi.advanceTimersByTimeAsync(6000); // drive 1s + 2s retry backoffs
+      expect(ap.getStatus().status).toBe('spawn-failed');
+    } finally {
+      mockPty.getPid.mockReturnValue(process.pid);
+      vi.useRealTimers();
+    }
+  });
+
+  it('BRIEF-ALIVE wrapper corpse (alive t0, dies within settle) → retry budget → SPAWN-FAILED', async () => {
+    vi.useFakeTimers();
+    AgentProcess.spawnSettleMs = 500; // poll the settle window
+    // getPid is alive at the immediate probe, but the wrapper dies during the
+    // settle (isAlive flips false) — the exact gen-B brief-alive-wrapper shape.
+    mockPty.getPid.mockReturnValue(process.pid);
+    let aliveCalls = 0;
+    mockPty.isAlive.mockImplementation(() => { aliveCalls += 1; return aliveCalls <= 2; }); // dies ~t+300
+    try {
+      const ap = new AgentProcess('alice', mockEnv, {});
+      void ap.start();
+      await vi.advanceTimersByTimeAsync(10000); // settle polls + retry backoffs
+      expect(ap.getStatus().status).toBe('spawn-failed');
+      expect(ap.getStatus().status).not.toBe('running');
+    } finally {
+      AgentProcess.spawnSettleMs = 0;
+      mockPty.isAlive.mockReturnValue(true);
+      vi.useRealTimers();
+    }
+  });
+
+  it('LATE-dying corpse (survives settle, exits BEFORE bootstrap) → handleExit routes to the SAME budget → SPAWN-FAILED', async () => {
+    vi.useFakeTimers();
+    try {
+      const ap = new AgentProcess('alice', mockEnv, {});
+      await ap.start();
+      expect(ap.getStatus().status).toBe('running'); // declared running, NOT bootstrapped
+      // It dies pre-bootstrap (no markBootstrapped). Each exit consumes the budget.
+      for (let i = 0; i < 3; i++) {
+        capturedOnExit?.(1, 0);            // pre-bootstrap exit → onPreBootstrapExit
+        await vi.advanceTimersByTimeAsync(5000); // drive retry backoff → re-start
+      }
+      expect(ap.getStatus().status).toBe('spawn-failed');
+      expect(ap.getStatus().status).not.toBe('crashed'); // NOT crash-recovery
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('healthy: LIVE pid → running; markBootstrapped resets the budget so a later exit is a CRASH not spawn-failed', async () => {
+    const ap = new AgentProcess('alice', mockEnv, {});
+    await ap.start();
+    expect(ap.getStatus().status).toBe('running');
+    ap.markBootstrapped();
+    expect(ap.hasBootstrapped()).toBe(true);
+    // A post-bootstrap exit is a crash (crash-recovery), NOT spawn-failed.
+    capturedOnExit?.(1, 0);
+    expect(ap.getStatus().status).toBe('crashed');
+  });
+});
+
+describe('AgentProcess - Area 4.2 MCP-degraded boot alert (B:F-09 re-scope)', () => {
+  const DEGRADED = '\x1b[38;5;240m⚠ 3 setup issues: settings, MCP, install\x1b[38;5;246m · /doctor\x1b[39m';
+
+  function mk(send: any) {
+    const ap = new AgentProcess('alice', mockEnv, {});
+    ap.setTelegramHandle({ sendMessage: send } as any, '999');
+    return ap;
+  }
+
+  it('degraded boot → ONE alert naming .mcp.json', () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    mk(send).checkMcpSetupWarningOnBoot(DEGRADED);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(String(send.mock.calls[0][1])).toContain('.mcp.json');
+    expect(String(send.mock.calls[0][1])).toMatch(/DEGRADED|MCP/);
+  });
+
+  it('clean boot → zero alerts', () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    mk(send).checkMcpSetupWarningOnBoot('Bootstrap complete. Beginning poll loop. Heartbeat updated.');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('false-positive guard: normal output mentioning "mcp" does NOT alert', () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    mk(send).checkMcpSetupWarningOnBoot('Using mcp tool to fetch data; run /doctor if needed. All MCP servers connected.');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('once-per-incident: re-degraded does NOT re-alert; a clean boot re-arms', () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const ap = mk(send);
+    ap.checkMcpSetupWarningOnBoot(DEGRADED);
+    ap.checkMcpSetupWarningOnBoot(DEGRADED);
+    expect(send).toHaveBeenCalledTimes(1);
+    ap.checkMcpSetupWarningOnBoot('all good, poll loop');
+    ap.checkMcpSetupWarningOnBoot(DEGRADED);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('AgentProcess - Area 4.3 midnight crash-budget reset (B:F-04)', () => {
+  const DAY1 = Date.UTC(2026, 5, 10, 23, 59, 0); // 2026-06-10 23:59Z (1min to day-roll)
+
+  beforeEach(() => { _resetUnhaltBatch(50); }); // short debounce for batch tests
+
+  it('start() on a new day clears a stale crash budget (no manual wipe)', async () => {
+    // .crash_count_today carries YESTERDAY's exhausted budget.
+    fsMocks.existsSync.mockImplementation((p: any) => String(p).endsWith('.crash_count_today'));
+    fsMocks.readFileSync.mockImplementation((p: any) =>
+      String(p).endsWith('.crash_count_today') ? '2026-06-09:10' : '');
+    vi.useFakeTimers(); vi.setSystemTime(Date.UTC(2026, 5, 10, 12, 0, 0));
+    try {
+      const ap = new AgentProcess('alice', mockEnv, {});
+      await ap.start();
+      expect(ap.getStatus().crashCount).toBe(0); // fresh budget
+      const wrote = fsMocks.writeFileSync.mock.calls.find((c: any) => String(c[0]).endsWith('.crash_count_today'));
+      expect(wrote).toBeTruthy();
+      expect(String(wrote[1])).toBe('2026-06-10:0'); // stale date cleared to today:0
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('daily check auto-unhalts a crash-budget-halted agent on the day-roll + restarts it', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(DAY1);
+    try {
+      const ap = new AgentProcess('alice', mockEnv, { max_crashes_per_day: 1 });
+      await ap.start();
+      ap.markBootstrapped(); // post-bootstrap crash (spawn-verify boundary)
+      capturedOnExit?.(1, 0);                         // 1 crash >= max(1) → halted
+      expect(ap.getStatus().status).toBe('halted');
+      const startSpy = vi.spyOn(ap, 'start').mockResolvedValue();
+      await vi.advanceTimersByTimeAsync(60_000 + 10); // cross into 2026-06-11 00:00 → top-of-hour tick
+      expect(ap.getStatus().status).not.toBe('halted'); // auto-unhalted
+      expect(ap.getStatus().crashCount).toBe(0);        // budget reset
+      expect(startSpy).toHaveBeenCalled();              // restarted
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('G2: a user-disabled halted agent stays DOWN on the day-roll (no auto-restart)', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(DAY1);
+    try {
+      const ap = new AgentProcess('alice', mockEnv, { max_crashes_per_day: 1 });
+      await ap.start();
+      ap.markBootstrapped(); // post-bootstrap crash (spawn-verify boundary)
+      capturedOnExit?.(1, 0);
+      expect(ap.getStatus().status).toBe('halted');
+      // operator-intent marker present
+      fsMocks.existsSync.mockImplementation((p: any) => String(p).endsWith('.user-disable'));
+      const startSpy = vi.spyOn(ap, 'start').mockResolvedValue();
+      await vi.advanceTimersByTimeAsync(60_000 + 10);
+      expect(ap.getStatus().status).toBe('halted'); // stays down
+      expect(startSpy).not.toHaveBeenCalled();      // NOT restarted
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('G1: two agents halted across midnight → ONE batched telegram naming both', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(DAY1);
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    try {
+      // Halt each agent in turn — the global capturedOnExit holds the LAST started
+      // agent's exit cb, so start+halt them one at a time.
+      const a = new AgentProcess('alice', mockEnv, { max_crashes_per_day: 1 });
+      a.setTelegramHandle({ sendMessage } as any, '999');
+      await a.start();
+      a.markBootstrapped(); // post-bootstrap crash (spawn-verify boundary)
+      capturedOnExit?.(1, 0);
+      expect(a.getStatus().status).toBe('halted');
+
+      const b = new AgentProcess('bob', { ...mockEnv, agentName: 'bob' }, { max_crashes_per_day: 1 });
+      b.setTelegramHandle({ sendMessage } as any, '999');
+      await b.start();
+      b.markBootstrapped(); // post-bootstrap crash (spawn-verify boundary)
+      capturedOnExit?.(1, 0);
+      expect(b.getStatus().status).toBe('halted');
+
+      vi.spyOn(a, 'start').mockResolvedValue();
+      vi.spyOn(b, 'start').mockResolvedValue();
+      await vi.advanceTimersByTimeAsync(60_000 + 10); // both top-of-hour timers tick the day-roll
+      await vi.advanceTimersByTimeAsync(100);          // debounce (50ms) flush
+
+      const calls = sendMessage.mock.calls.filter((c: any) => /Auto-unhalted/.test(String(c[1])));
+      expect(calls.length).toBe(1);                    // ONE notice, not per-agent (G1)
+      expect(String(calls[0][1])).toMatch(/Auto-unhalted 2 agent\(s\)/);
+      expect(String(calls[0][1])).toContain('alice');
+      expect(String(calls[0][1])).toContain('bob');
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+describe('AgentProcess - cron auto-verification', () => {
+  it('scheduleCronVerification() is a no-op when config has no crons', async () => {
+    const ap = new AgentProcess('alice', mockEnv, {});
+    await ap.start();
+    // Should not throw, should not schedule anything
+    ap.scheduleCronVerification();
+    // No inject calls expected (beyond any from start)
+    expect(mockInjectMessage).not.toHaveBeenCalled();
+  });
+
+  it('scheduleCronVerification() is a no-op when config has only once crons', async () => {
+    const ap = new AgentProcess('alice', mockEnv, {
+      crons: [{ name: 'reminder', type: 'once' as const, fire_at: '2099-01-01T00:00:00Z', prompt: 'test' }],
+    });
+    await ap.start();
+    ap.scheduleCronVerification();
+    // Wait briefly to confirm nothing fires
+    await new Promise(r => setTimeout(r, 100));
+    expect(mockInjectMessage).not.toHaveBeenCalled();
+  });
+
+  it('scheduleCronVerification() schedules verification when config has recurring crons', async () => {
+    const ap = new AgentProcess('alice', mockEnv, {
+      crons: [
+        { name: 'heartbeat', interval: '4h', prompt: 'check in' },
+        { name: 'research', type: 'recurring' as const, interval: '24h', prompt: 'research' },
+      ],
+    });
+    await ap.start();
+    // This should not throw — verification runs in background
+    ap.scheduleCronVerification();
+    // Verification is waiting for idle flag — no immediate injection
+    expect(mockInjectMessage).not.toHaveBeenCalled();
+  });
+
+  it('verifyCronsAfterIdle: injects prompt containing cron names once idle flag appears newer than boot', async () => {
+    const fs = await import('fs');
+    const mockExistsSync = vi.mocked(fs.existsSync);
+    const mockReadFileSync = vi.mocked(fs.readFileSync);
+
+    const bootTs = 1000;
+    const idleTs = 2000;
+
+    // Track calls so the first read (boot snapshot) returns bootTs,
+    // subsequent reads (poll) return idleTs (agent went idle)
+    let readCount = 0;
+    mockExistsSync.mockImplementation((p) => {
+      if (typeof p === 'string' && p.endsWith('last_idle.flag')) return true;
+      return false;
+    });
+    mockReadFileSync.mockImplementation((p) => {
+      if (typeof p === 'string' && p.endsWith('last_idle.flag')) {
+        readCount++;
+        return readCount === 1 ? String(bootTs) : String(idleTs);
+      }
+      return '';
+    });
+
+    vi.useFakeTimers();
+    try {
+      const ap = new AgentProcess('alice', mockEnv, {
+        crons: [
+          { name: 'heartbeat', interval: '4h', prompt: 'check in' },
+          { name: 'daily-report', interval: '24h', prompt: 'report' },
+        ],
+      });
+      await ap.start();
+
+      ap.scheduleCronVerification();
+
+      // Advance past the 15s poll interval so the background loop wakes,
+      // reads the newer flag timestamp, and injects the verification prompt
+      await vi.advanceTimersByTimeAsync(16_000);
+    } finally {
+      vi.useRealTimers();
+      // Restore default fs mock behaviour for other tests
+      mockExistsSync.mockReturnValue(false);
+      mockReadFileSync.mockReset();
+    }
+
+    expect(mockInjectMessage).toHaveBeenCalledOnce();
+    const promptArg: string = mockInjectMessage.mock.calls[0][1] as string;
+    expect(promptArg).toContain('heartbeat');
+    expect(promptArg).toContain('daily-report');
   });
 });

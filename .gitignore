@@ -54,6 +54,7 @@ BRAINDUMP*.md
 AGENTS.md
 dashboard/screenshots/
 dashboard/test-*.py
+.vercel
 
 # Public community agent templates may intentionally include their own docs,
 # AGENTS.md, memory skill, and scaffold files.

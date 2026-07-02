@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import { execSync } from 'child_process';
 import { join, sep } from 'path';
 import { homedir } from 'os';
 import type { AgentConfig, AgentStatus, CtxEnv } from '../types/index.js';
@@ -6,6 +7,7 @@ import { AgentPTY } from '../pty/agent-pty.js';
 import { CodexAppServerPTY } from '../pty/codex-app-server-pty.js';
 import { HermesPTY, hermesDbExists } from '../pty/hermes-pty.js';
 import { MessageDedup, injectMessage } from '../pty/inject.js';
+import { recordSpawnFailure } from './spawn-failure-alerter.js';
 import type { TelegramAPI } from '../telegram/api.js';
 import { ensureDir } from '../utils/atomic.js';
 import { writeCortextosEnv } from '../utils/env.js';
@@ -18,12 +20,59 @@ type LogFn = (msg: string) => void;
  * Manages a single agent's lifecycle.
  * Replaces agent-wrapper.sh for one agent.
  */
+// G1 (Area 4.3): auto-unhalt notices are BATCHED across agents — multiple agents
+// crossing midnight halted must produce ONE telegram naming all + count, never one
+// per agent (gen-B lesson, same shape as the spawn-failure alerter). The top-of-hour
+// daily-reset timer fires all agents together at the day-roll; a module-level
+// collector with a short debounce coalesces their unhalts into a single notice.
+const _unhaltBatch: {
+  names: Set<string>;
+  timer: ReturnType<typeof setTimeout> | null;
+  api: TelegramAPI | null;
+  chatId: string | null;
+} = { names: new Set(), timer: null, api: null, chatId: null };
+let unhaltBatchDebounceMs = 10_000; // injectable for tests
+
+function recordAutoUnhalt(name: string, api: TelegramAPI | null, chatId: string | null): void {
+  _unhaltBatch.names.add(name);
+  if (api && chatId) { _unhaltBatch.api = api; _unhaltBatch.chatId = chatId; } // any agent's handle (shared operator chat)
+  if (_unhaltBatch.timer) clearTimeout(_unhaltBatch.timer);
+  _unhaltBatch.timer = setTimeout(() => {
+    const names = [..._unhaltBatch.names];
+    const api2 = _unhaltBatch.api;
+    const chatId2 = _unhaltBatch.chatId;
+    _unhaltBatch.names.clear();
+    _unhaltBatch.timer = null;
+    _unhaltBatch.api = null;
+    _unhaltBatch.chatId = null;
+    if (api2 && chatId2 && names.length > 0) {
+      api2
+        .sendMessage(chatId2, `Auto-unhalted ${names.length} agent(s) on day-roll (crash budget reset): ${names.join(', ')}`)
+        .catch(() => {});
+    }
+  }, unhaltBatchDebounceMs);
+  if (typeof _unhaltBatch.timer.unref === 'function') _unhaltBatch.timer.unref();
+}
+
+/** Test seam: drain + clear the auto-unhalt batch synchronously. */
+export function _resetUnhaltBatch(debounceMs?: number): void {
+  if (_unhaltBatch.timer) clearTimeout(_unhaltBatch.timer);
+  _unhaltBatch.names.clear();
+  _unhaltBatch.timer = null;
+  _unhaltBatch.api = null;
+  _unhaltBatch.chatId = null;
+  if (debounceMs !== undefined) unhaltBatchDebounceMs = debounceMs;
+}
+
 export class AgentProcess {
   readonly name: string;
   private env: CtxEnv;
   private config: AgentConfig;
   private pty: AgentPTY | CodexAppServerPTY | null = null;
   private sessionTimer: ReturnType<typeof setTimeout> | null = null;
+  private bootTimer: ReturnType<typeof setTimeout> | null = null;
+  private dailyResetTimer: ReturnType<typeof setInterval> | null = null;
+  private lastBudgetDay: string = '';
   private crashCount: number = 0;
   private maxCrashesPerDay: number = 10;
   // CrashLoopPauser (instar-inspired): sliding-window crash detection.
@@ -64,11 +113,31 @@ export class AgentProcess {
   // (each start() recreates the PTY, but the Telegram handle persists).
   private telegramApi: TelegramAPI | null = null;
   private telegramChatId: string | null = null;
+  // Area 4.4 wedge-detection
+  private wedgeWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  private wedgeReRestartUsed = false;
+  private lastWedgeAlertAt = 0;
+  static wedgeDetectMs = 5 * 60 * 1000;
+  static wedgeAlertDedupMs = 15 * 60 * 1000;
+  // Area 4.2 (B:F-09): MCP-degraded boot alert latch
+  private mcpDegradedAlerted = false;
   // Issue #392: tracks whether the most recently built startup prompt consumed
   // a handoff doc marker. start() reads this after spawn to decide whether the
   // daemon should fire the codex-app-server back-online Telegram directly
   // (skipped on handoff restart — the agent sends its own contextual reply).
   private lastSpawnWasHandoff = false;
+  // Spawn-verify (gen-B): bootstrap-completion is the line between the spawn-
+  // retry budget and crash-recovery. everBootstrapped flips on a real bootstrap
+  // (markBootstrapped) and routes future exits to crash-recovery; spawnAttempts
+  // is the unified pre-bootstrap budget (reset on bootstrap); spawnVerifying
+  // makes handleExit defer to the settle poll during the post-spawn window.
+  private everBootstrapped = false;
+  private spawnAttempts = 0;
+  private spawnVerifying = false;
+  /** Settle window (ms) to confirm a spawned pid stays alive — INJECTABLE for tests. */
+  static spawnSettleMs = 500;
+  /** Settle poll interval (ms) — INJECTABLE for tests. */
+  static spawnSettlePollMs = 100;
 
   constructor(name: string, env: CtxEnv, config: AgentConfig, log?: LogFn) {
     this.name = name;
@@ -93,6 +162,13 @@ export class AgentProcess {
       this.log('Already running');
       return;
     }
+
+    // Area 4.3 (B:F-04): clear a stale crash budget up front so the FIRST start of
+    // a new day gets a fresh budget without a manual wipe, and arm the top-of-hour
+    // daily-reset timer (handles the long-running-daemon case where no start() runs
+    // across midnight). Non-incrementing — start() is not a crash.
+    this.resetCrashBudgetIfNewDay(new Date().toISOString().split('T')[0]);
+    this.armDailyResetTimer();
 
     // Apply startup delay
     const delay = this.config.startup_delay || 0;
@@ -129,27 +205,40 @@ export class AgentProcess {
     const logPath = join(this.env.ctxRoot, 'logs', this.name, 'stdout.log');
     ensureDir(join(this.env.ctxRoot, 'logs', this.name));
     this.log(`Log path: ${logPath}`);
+
+    // Spawn with verification + bounded retry (gen-B spawn-verify). node-pty's
+    // spawn() returns a pty object even when posix_spawnp fails — the error
+    // surfaces async on the fd and getPid() can hold a corpse pid — so a bare
+    // spawn that "resolves" can report a dead process as 'running' and the
+    // fast-checker's bootstrap-timeout then declares "Bootstrap complete" for a
+    // process that never existed (the gen-B zombie registry). Here we VERIFY a
+    // live child before declaring running, RETRY with backoff on failure, and
+    // on exhaustion record SPAWN-FAILED registry truth (NOT running) so the
+    // daemon can fire ONE fleet-wide operator alert instead of 4.5h of silence.
+    // ONE spawn attempt; the persistent spawnAttempts counter is the unified
+    // budget. node-pty's spawn() returns a pty object even when posix_spawnp
+    // fails (error surfaces async; getPid() can hold a corpse pid), so we VERIFY
+    // a live pid AND survive a bounded SETTLE window (a briefly-alive wrapper
+    // that dies as the exec fails inside is the gen-B shape). ANY pre-bootstrap
+    // exit — here or later via handleExit — routes to onPreBootstrapExit, which
+    // retries up to MAX_SPAWN_ATTEMPTS then SPAWN-FAILED + alert + STOP.
+    // Bootstrap-completion is the semantic line: crash-recovery is post-bootstrap.
+    this.spawnAttempts++;
     this.pty = this.config.runtime === 'hermes'
       ? new HermesPTY(this.env, this.config, logPath)
       : this.config.runtime === 'codex-app-server'
         ? new CodexAppServerPTY(this.env, this.config, logPath)
         : new AgentPTY(this.env, this.config, logPath);
 
-    // Issue #330: re-wire the Telegram handle on every start() (session refresh
-    // creates a fresh CodexAppServerPTY). Only CodexAppServerPTY uses this — Claude / Hermes
-    // typing indicators flow through fast-checker.
+    // Issue #330: re-wire the Telegram handle (only CodexAppServerPTY uses it).
     if (this.config.runtime === 'codex-app-server' && this.telegramApi && this.telegramChatId) {
       (this.pty as CodexAppServerPTY).setTelegramHandle(this.telegramApi, this.telegramChatId);
     }
 
-    // BUG-011 fix: create a fresh exit signal for this run. resolveExit is
-    // called from the onExit handler below; stop() awaits exitPromise to
-    // guarantee the exit handler has fired before clearing stopping.
+    // BUG-011 fix: fresh exit signal; stop() awaits exitPromise.
     this.exitPromise = new Promise<void>((resolve) => {
       this.resolveExit = resolve;
     });
-
-    // Handle exit
     this.pty.onExit((exitCode, signal) => {
       // BUG-040 fix: if the lifecycle has moved on (a new start() incremented
       // the generation since this PTY was spawned), this is an old PTY's late
@@ -178,26 +267,115 @@ export class AgentProcess {
         this.log('PTY exited during spawn — handleExit will recover');
         return;
       }
+
+      // Immediate pid probe: a posix_spawnp corpse is dead/absent right away.
+      const spawnedPid = this.pty.getPid();
+      if (spawnedPid === null || spawnedPid <= 0 || !isPidAlive(spawnedPid)) {
+        this.onPreBootstrapExit(`spawn produced no live pid (pid=${spawnedPid ?? 'null'})`);
+        return;
+      }
+
+      // SETTLE: catch a briefly-alive WRAPPER pid that dies as the exec fails
+      // inside (the gen-B shape the immediate probe misses). spawnVerifying makes
+      // handleExit defer to this poll so a mid-settle death routes exactly once.
+      // Skipped for codex-app-server (its exec-per-turn model legitimately exits).
+      if (this.config.runtime !== 'codex-app-server') {
+        this.spawnVerifying = true;
+        try {
+          for (let waited = 0; waited < AgentProcess.spawnSettleMs; waited += AgentProcess.spawnSettlePollMs) {
+            await sleep(AgentProcess.spawnSettlePollMs);
+            if (!this.pty || !this.pty.isAlive() || !isPidAlive(spawnedPid)) {
+              this.spawnVerifying = false;
+              this.onPreBootstrapExit(`pid ${spawnedPid} died within the ${AgentProcess.spawnSettleMs}ms settle window`);
+              return;
+            }
+          }
+        } finally {
+          this.spawnVerifying = false;
+        }
+      }
+
+      // Survived the settle window. 'running', but NOT yet bootstrapped — a
+      // pre-bootstrap exit from here still routes to the spawn-retry budget; only
+      // a real bootstrap (markBootstrapped, from the fast-checker) hands the
+      // agent over to crash-recovery and resets the budget.
       this.status = 'running';
       this.sessionStart = new Date();
-      this.log(`Running (pid: ${this.pty.getPid()})`);
-
+      this.log(`Running (pid: ${spawnedPid})`);
       // Issue #392: codex-app-server does not reliably execute the inline
-      // "Send a Telegram message saying you are back online" instruction the
-      // way claude-code does, so fire the back-online ping directly from the
-      // daemon for that runtime. Skipped on handoff restart — the agent
-      // sends its own contextual "back — ..." reply in that case.
+      // "back online" instruction the way claude-code does, so fire the ping
+      // directly from the daemon. Skipped on handoff restart.
       this.maybeSendCodexBootNotification();
-
-      // Start session timer
       this.startSessionTimer();
-
+      this.startBootWatchdog();
       this.notifyStatusChange();
     } catch (err) {
-      this.log(`Failed to start: ${err}`);
-      this.status = 'crashed';
-      this.notifyStatusChange();
+      try { this.pty?.kill(); } catch { /* already dead */ }
+      this.pty = null;
+      this.onPreBootstrapExit(`spawn threw: ${err}`);
     }
+  }
+
+  /**
+   * A pre-bootstrap exit (the process died before it ever bootstrapped, and was
+   * not intentionally stopped) — from the settle poll or from handleExit. Routes
+   * to the unified bounded spawn-retry budget: retry up to MAX_SPAWN_ATTEMPTS,
+   * then SPAWN-FAILED + fleet alert + STOP (no crash-loop). This REPLACES the
+   * crash-recovery path for pre-bootstrap exits (which is now post-bootstrap
+   * only), tightening the bound from max_crashes_per_day (~10, silent) to 3-loud.
+   */
+  private onPreBootstrapExit(reason: string): void {
+    if (this.everBootstrapped || this.status === 'spawn-failed' || this.stopRequested) return;
+    this.clearSessionTimer();
+    this.clearBootWatchdog();
+    this.pty = null;
+    const failureClass = classifySpawnFailure(reason);
+    if (this.spawnAttempts >= MAX_SPAWN_ATTEMPTS) {
+      this.markSpawnFailed(failureClass);
+      return;
+    }
+    // The agent died — it is no longer running, so clear the 'running' status or
+    // the retry's start() would bail with "Already running".
+    this.status = 'starting';
+    const backoff = SPAWN_RETRY_BASE_MS * 2 ** (this.spawnAttempts - 1); // 1s, 2s
+    this.log(`Pre-bootstrap exit (attempt ${this.spawnAttempts}/${MAX_SPAWN_ATTEMPTS}, ${failureClass}): ${reason} — retrying in ${backoff}ms`);
+    setTimeout(() => {
+      if (this.status === 'spawn-failed' || this.stopRequested || this.everBootstrapped) return;
+      void this.start();
+    }, backoff);
+  }
+
+  /**
+   * Record SPAWN-FAILED registry truth + feed the fleet-wide operator alert, and
+   * STOP (no retry, no crash-recovery). Recoverable: the operator alert prompts a
+   * `cortextos enable` (resets the budget), and a daemon restart re-attempts with
+   * spawnAttempts=0.
+   */
+  private markSpawnFailed(failureClass: string): void {
+    if (this.status === 'spawn-failed') return;
+    this.status = 'spawn-failed';
+    this.pty = null;
+    this.clearSessionTimer();
+    this.clearBootWatchdog();
+    this.notifyStatusChange();
+    recordSpawnFailure(this.name, failureClass);
+    this.log(`SPAWN-FAILED after ${MAX_SPAWN_ATTEMPTS} attempts (${failureClass}) — agent is NOT running (recover via re-enable or daemon restart)`);
+  }
+
+  /**
+   * The agent reached bootstrap — hand it over to crash-recovery for any future
+   * exit, and reset the spawn-retry budget so a long-lived agent that crashes
+   * months later isn't judged against stale pre-boot attempts. Called by the
+   * fast-checker when waitForBootstrap succeeds (incl. the alive-but-quiet path).
+   */
+  markBootstrapped(): void {
+    this.everBootstrapped = true;
+    this.spawnAttempts = 0;
+  }
+
+  /** True once the agent has bootstrapped at least once this lifecycle. */
+  hasBootstrapped(): boolean {
+    return this.everBootstrapped;
   }
 
   /**
@@ -212,6 +390,8 @@ export class AgentProcess {
     this.stopRequested = true;
     this.log('Stopping...');
     this.clearSessionTimer();
+    this.clearBootWatchdog();
+    this.clearDailyResetTimer();
 
     // Capture and null out pty BEFORE any awaits so handleExit() during graceful
     // shutdown doesn't race with us and trigger crash recovery or a double-kill.
@@ -259,22 +439,61 @@ export class AgentProcess {
       // pty.kill() on an already-exited PTY tears down the file descriptor,
       // which can send SIGHUP (exit code 129) to a process that was in the
       // middle of flushing. Polling first eliminates the remaining SIGHUP risk.
+      //
+      // Capture the OS pid BEFORE pty.kill() — the wrapper nulls its handle and
+      // flips isAlive() to false on the first kill(), so a later liveness recheck
+      // through the wrapper is impossible. The pid lets us confirm a real exit
+      // and escalate a wedged child (#202).
+      let childPid: number | null = null;
+      let descendantPids: number[] = [];
       if (pty.isAlive()) {
+        childPid = pty.getPid();
+        // Snapshot the descendant tree NOW, while it is still attached to the
+        // leader (children are ppid-children until the leader dies). A child
+        // that put itself in its OWN process group (job control / setpgid /
+        // detached helper) survives a leader process-group SIGKILL and reparents
+        // to pid 1 — the group signal alone misses it. Capturing by ppid here
+        // lets the escalation SIGKILL each survivor by pid regardless of group.
+        if (childPid !== null) descendantPids = collectDescendants(childPid);
         try {
-          pty.kill();
+          pty.kill(); // graceful SIGTERM via node-pty
         } catch {
           // PTY may have exited between the check and the kill — ignore
         }
       }
 
       // BUG-011 fix: AWAIT the exit handler before resolving stop().
-      // BUG-040 fix: bumped timeout from 5s to 15s to give the PTY plenty of
-      // time to exit cleanly even when BUG-032's slow graceful shutdown stacks
-      // on top of pty.kill() lag. The functional correctness no longer depends
-      // on this timeout (stopRequested handles late exits), but a generous
-      // timeout reduces "Ignoring late exit from previous lifecycle" log noise.
+      // #202 hard-restart fix: SIGTERM alone never escalates, so a wedged child
+      // (and its descendants) could survive `bus hard-restart` as a zombie. Wait
+      // a bounded window for the graceful exit; if the pid is still alive,
+      // SIGKILL the whole PROCESS GROUP so no orphaned children survive (node-pty
+      // spawns the child as a session leader, so the negative-pid signal reaps
+      // the descendant tree — orphaned grandchildren are exactly the OS resource
+      // exhaustion this class produced). pid-fallback + a kill(pid,0) liveness
+      // guard keep it from signalling a recycled pid.
       if (exitPromise) {
-        await Promise.race([exitPromise, sleep(15000)]);
+        const exitedGracefully = await Promise.race([
+          exitPromise.then(() => true),
+          sleep(HARD_KILL_GRACE_MS).then(() => false),
+        ]);
+        if (!exitedGracefully && childPid !== null && isPidAlive(childPid)) {
+          this.log(`PTY pid ${childPid} still alive ${HARD_KILL_GRACE_MS}ms after SIGTERM — escalating to SIGKILL on the process group (#202)`);
+          hardKillProcessGroup(childPid);
+          await Promise.race([exitPromise, sleep(5000)]);
+        }
+        // Regardless of how the leader exited, reap any descendant that outlived
+        // it. Own-pgroup children orphan to pid 1 and escape BOTH the
+        // SIGHUP-on-leader-death and a leader-group SIGKILL, so the group signal
+        // is not sufficient — SIGKILL each snapshotted descendant still alive.
+        // (This is the completion of (b): orphaned descendants are the suspected
+        // OS process-exhaustion mechanism.)
+        const survivors = descendantPids.filter(isPidAlive);
+        if (survivors.length > 0) {
+          this.log(`Reaping ${survivors.length} surviving PTY descendant(s) by pid after teardown — own-pgroup orphans escape the group signal (#202)`);
+          for (const pid of survivors) {
+            try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+          }
+        }
       }
     }
 
@@ -357,6 +576,18 @@ export class AgentProcess {
    */
   isBootstrapped(): boolean {
     return this.pty?.getOutputBuffer().isBootstrapped() ?? false;
+  }
+
+  /**
+   * True if the agent's PTY process is alive at the OS level. Unlike the PTY
+   * wrapper's optimistic `_alive` flag (set true on spawn and only cleared by
+   * onExit — a posix_spawnp corpse keeps it true), this probes the real pid, so
+   * the fast-checker can distinguish a dead process from an alive-but-quiet one
+   * during the bootstrap wait (gen-B: never log "Bootstrap complete" for a corpse).
+   */
+  isProcessAlive(): boolean {
+    const pid = this.pty?.getPid();
+    return pid != null && pid > 0 && isPidAlive(pid);
   }
 
   /**
@@ -459,6 +690,40 @@ export class AgentProcess {
     }
   }
 
+  // The exact non-fatal warning claude surfaces on a broken .mcp.json (captured
+  // in the repro on v2.1.170): "⚠ N setup issues: …, MCP, … · /doctor". Anchored
+  // on the setup-issues + MCP + /doctor triple so normal output that merely
+  // mentions "mcp" cannot false-positive.
+  private static readonly MCP_SETUP_WARNING_RE = /setup issues:[^\n]*\bMCP\b[^\n]*\/doctor/i;
+
+  /**
+   * Post-bootstrap MCP-degraded surface (Area 4.2, B:F-09 re-scope). A broken
+   * .mcp.json no longer crashes claude — it boots DEGRADED with a non-fatal
+   * "setup issues … MCP … /doctor" warning, leaving the agent running WITHOUT its
+   * MCP tools (a silent-failure class). Called once bootstrap completes: scan the
+   * boot stdout tail and emit ONE operator alert naming .mcp.json. Surface-only:
+   * NO restart/backoff (the agent is alive). Once-per-incident — the latch clears
+   * here on a warning-free boot, so a fixed .mcp.json re-arms for the next time.
+   */
+  checkMcpSetupWarningOnBoot(bootOutput?: string): void {
+    const clean = (bootOutput ?? this.tailStdoutLog(16384)).replace(/\x1b\[[0-9;]*[a-zA-Z]/g, ''); // strip ANSI/TUI codes
+    if (!AgentProcess.MCP_SETUP_WARNING_RE.test(clean)) {
+      this.mcpDegradedAlerted = false; // warning-free boot → recovery, re-arm
+      return;
+    }
+    if (this.mcpDegradedAlerted) return; // already alerted this incident
+    this.mcpDegradedAlerted = true;
+    this.log(`MCP setup issue on boot — running DEGRADED (MCP tools unavailable); check this agent's .mcp.json (claude /doctor for detail)`);
+    if (this.telegramApi && this.telegramChatId) {
+      this.telegramApi
+        .sendMessage(
+          this.telegramChatId,
+          `⚠️ Agent ${this.name} booted DEGRADED: MCP setup issue — its MCP tools are unavailable. Check .mcp.json (run claude /doctor for detail).`,
+        )
+        .catch(() => {});
+    }
+  }
+
   /**
    * Match the API 400 image-poison signature in recent stdout.
    *
@@ -498,6 +763,13 @@ export class AgentProcess {
   }
 
   private handleExit(exitCode: number): void {
+    // Spawn-verify: during the post-spawn settle window the settle poll owns the
+    // death (it routes to onPreBootstrapExit exactly once). Defer — do NOT null
+    // pty or recover here, or the settle's pid probe loses its handle.
+    if (this.spawnVerifying) {
+      return;
+    }
+
     // Capture last 16KB of the agent's stdout BEFORE nulling pty.
     // Used by the image-poison auto-recovery check below — reads the log
     // file so this works even if the PTY buffer has already been GC'd.
@@ -505,6 +777,7 @@ export class AgentProcess {
 
     this.pty = null;
     this.clearSessionTimer();
+    this.clearBootWatchdog();
 
     // When the cortextos daemon is shut down by PM2, SIGTERM propagates to
     // the whole process group and reaches each PTY's Claude Code child
@@ -543,6 +816,17 @@ export class AgentProcess {
     // awaiting. Either flag short-circuits crash recovery.
     if (this.stopRequested || this.stopping) {
       this.stopRequested = false;
+      return;
+    }
+
+    // Spawn-verify boundary (gen-B): bootstrap-completion is the semantic line.
+    // An exit BEFORE the agent ever bootstrapped is a failed start — route it to
+    // the unified spawn-retry budget (retry up to MAX then SPAWN-FAILED + alert +
+    // STOP), NOT crash-recovery. Crash-recovery (below) serves POST-bootstrap
+    // crashes only. This replaces the old path where a pre-boot corpse crash-
+    // looped up to max_crashes_per_day (~10), silently, as 'crashed'.
+    if (!this.everBootstrapped && this.status !== 'spawn-failed') {
+      this.onPreBootstrapExit(`exited code ${exitCode} before bootstrap`);
       return;
     }
 
@@ -633,9 +917,93 @@ export class AgentProcess {
 
     setTimeout(() => {
       if (this.status === 'crashed') {
-        this.start().catch(err => this.log(`Restart failed: ${err}`));
+        const restartAt = Date.now();
+        this.start()
+          .then(() => this.armWedgeWatchdog(restartAt, false))
+          .catch(err => this.log(`Restart failed: ${err}`));
       }
     }, backoff);
+  }
+
+  /**
+   * Area 4.4 wedge-detection. After a crash-recovery restart, require a heartbeat
+   * written STRICTLY AFTER the restart within wedgeDetectMs — a healthy resume
+   * writes one within ~1-2min via its boot/resume routine, a session wedged on an
+   * onboarding/trust prompt never does. Absent: arm `.force-fresh` + one re-restart
+   * (cap=1); still wedged after that: ONE operator alert (restart-wedged class).
+   */
+  private armWedgeWatchdog(restartAt: number, isRetry: boolean): void {
+    if (this.wedgeWatchdogTimer) clearTimeout(this.wedgeWatchdogTimer);
+    this.wedgeWatchdogTimer = setTimeout(() => {
+      this.wedgeWatchdogTimer = null;
+      // Only a still-running, non-stopped agent can be "wedged". An intentional
+      // stop (or a status that already moved off 'running') is not a wedge.
+      if (this.stopRequested || this.status !== 'running') return;
+      if (this.hasHeartbeatNewerThan(restartAt)) {
+        this.wedgeReRestartUsed = false; // resumed cleanly — re-arm the cap for next crash
+        return;
+      }
+      this.log(
+        `Restart-wedged: no heartbeat within ${AgentProcess.wedgeDetectMs / 1000}s of crash-recovery restart — session did not resume`,
+      );
+      if (!isRetry && !this.wedgeReRestartUsed) {
+        // cap = EXACTLY 1: force a clean fresh session and re-restart once.
+        this.wedgeReRestartUsed = true;
+        this.armForceFresh('restart-wedged: --continue resume did not become responsive');
+        void this.restartFromWedge();
+      } else {
+        this.emitRestartWedgedAlert();
+      }
+    }, AgentProcess.wedgeDetectMs);
+    if (typeof this.wedgeWatchdogTimer.unref === 'function') this.wedgeWatchdogTimer.unref();
+  }
+
+  /** A heartbeat written strictly after `sinceMs` proves the restarted session resumed. */
+  private hasHeartbeatNewerThan(sinceMs: number): boolean {
+    try {
+      const p = join(this.env.ctxRoot, 'state', this.name, 'heartbeat.json');
+      if (!existsSync(p)) return false;
+      const hb = JSON.parse(readFileSync(p, 'utf-8'));
+      const t = hb.last_heartbeat ? new Date(hb.last_heartbeat).getTime() : statSync(p).mtimeMs;
+      return Number.isFinite(t) && t > sinceMs;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Force-fresh re-restart of a wedged session (.force-fresh already armed). */
+  private async restartFromWedge(): Promise<void> {
+    try {
+      await this.stop();
+      const reRestartAt = Date.now();
+      await this.start();
+      this.armWedgeWatchdog(reRestartAt, true); // retry pass: no second force-fresh, alert if still wedged
+    } catch (err) {
+      this.log(`Wedge re-restart failed: ${err}`);
+      this.emitRestartWedgedAlert();
+    }
+  }
+
+  /**
+   * ONE operator alert per restart-wedged class per 15-min window. cdd8fc61-native
+   * via the daemon's existing Telegram handle + a local dedup. NOTE: unifies with
+   * the #620 spawn-failure-alerter's fleet class-dedup when both land (see DELIVERY).
+   */
+  private emitRestartWedgedAlert(): void {
+    const now = Date.now();
+    if (now - this.lastWedgeAlertAt < AgentProcess.wedgeAlertDedupMs) return;
+    this.lastWedgeAlertAt = now;
+    this.log(
+      `RESTART-WEDGED: agent "${this.name}" restarted into a non-responsive session and did not recover after a force-fresh re-restart — manual attention needed`,
+    );
+    if (this.telegramApi && this.telegramChatId) {
+      this.telegramApi
+        .sendMessage(
+          this.telegramChatId,
+          `⚠️ Agent ${this.name} RESTART-WEDGED: crash-recovery restart did not resume (no heartbeat) and a force-fresh re-restart also failed. Needs manual attention.`,
+        )
+        .catch(() => {});
+    }
   }
 
   private shouldContinue(): boolean {
@@ -864,6 +1232,43 @@ export class AgentProcess {
     }
   }
 
+  private startBootWatchdog(): void {
+    this.clearBootWatchdog();
+    const DEFAULT_BOOT_TIMEOUT_S = 300;
+    const timeoutS = this.config.boot_timeout_seconds ?? DEFAULT_BOOT_TIMEOUT_S;
+    if (timeoutS <= 0) return;
+
+    this.bootTimer = setTimeout(() => {
+      this.bootTimer = null;
+      if (this.status !== 'running') return;
+      if (this.isBootstrapped()) return;
+
+      this.log(
+        `BOOT_TIMEOUT: agent did not bootstrap within ${timeoutS}s — killing and restarting fresh`,
+      );
+      this.appendCrashToRestartsLog(0, 5000, 'CRASH');
+      this.armForceFresh('boot-timeout auto-recovery');
+      this.stopRequested = true;
+      if (this.pty) {
+        try {
+          (this.pty as AgentPTY).kill();
+        } catch { /* PTY may have exited between the check and the kill */ }
+      }
+      setTimeout(() => {
+        if (this.status === 'stopped' || this.status === 'crashed') {
+          this.start().catch(err => this.log(`Boot-timeout restart failed: ${err}`));
+        }
+      }, 5000);
+    }, timeoutS * 1000);
+  }
+
+  private clearBootWatchdog(): void {
+    if (this.bootTimer) {
+      clearTimeout(this.bootTimer);
+      this.bootTimer = null;
+    }
+  }
+
   /**
    * Check whether the daemon is currently in its shutdown sequence.
    *
@@ -933,13 +1338,268 @@ export class AgentProcess {
     } catch { /* ignore */ }
   }
 
+  /**
+   * NON-incrementing budget reset (Area 4.3, B:F-04). Unlike resetCrashCountIfNewDay
+   * (the crash-path version, which +1's because a crash just happened), this loads or
+   * resets the budget WITHOUT counting a crash — for start() and the daily check. On
+   * a new UTC day it zeroes the count and clears the stale date file; same day it
+   * loads the stored count. Returns true iff it rolled to a new day.
+   */
+  private resetCrashBudgetIfNewDay(today: string): boolean {
+    const crashFile = join(this.env.ctxRoot, 'logs', this.name, '.crash_count_today');
+    let rolled = false;
+    try {
+      if (existsSync(crashFile)) {
+        const [storedDate, count] = readFileSync(crashFile, 'utf-8').trim().split(':');
+        if (storedDate === today) {
+          this.crashCount = parseInt(count, 10) || 0; // same day: load only, no write
+        } else {
+          // Stale date from a previous day → clear it (this is the B:F-04 fix).
+          this.crashCount = 0;
+          rolled = true;
+          ensureDir(join(this.env.ctxRoot, 'logs', this.name));
+          writeFileSync(crashFile, `${today}:0`, 'utf-8');
+        }
+      } else {
+        this.crashCount = 0; // no file: nothing to clear, no write (created on first real crash)
+      }
+    } catch { /* ignore — budget reset is best-effort */ }
+    this.lastBudgetDay = today;
+    return rolled;
+  }
+
+  /** G2: operator-intent markers mean an agent must NOT auto-restart on day-roll. */
+  private hasUserIntentMarker(): boolean {
+    const stateDir = join(this.env.ctxRoot, 'state', this.name);
+    return existsSync(join(stateDir, '.user-disable')) || existsSync(join(stateDir, '.user-stop'));
+  }
+
+  /**
+   * Top-of-hour daily-reset timer (Area 4.3, B:F-04). Aligned to :00 so all agents
+   * tick together at the day-roll, which lets the auto-unhalt notice BATCH (G1).
+   * Each tick, once a new UTC day is crossed: reset the crash budget; a crash-budget
+   * HALTED agent that is NOT operator-disabled (G2) is auto-unhalted + restarted and
+   * recorded into the shared batch for ONE coalesced notice. Armed once per lifecycle
+   * and left running across crash-recovery + halt (so a halt survives no longer than
+   * the day-roll); cleared on intentional stop.
+   */
+  private armDailyResetTimer(): void {
+    if (this.dailyResetTimer) return; // already armed for this lifecycle
+    const now = new Date();
+    this.lastBudgetDay = now.toISOString().split('T')[0];
+    const msToNextHour = (60 - now.getUTCMinutes()) * 60_000 - now.getUTCSeconds() * 1000 - now.getUTCMilliseconds();
+    const tick = () => {
+      const today = new Date().toISOString().split('T')[0];
+      if (today === this.lastBudgetDay) return; // crossed-UTC-day guard
+      this.resetCrashBudgetIfNewDay(today);
+      if (this.status !== 'halted') return;
+      if (this.hasUserIntentMarker()) {
+        this.log('Day-roll: crash budget reset, but operator marker present — NOT auto-restarting (G2)');
+        return;
+      }
+      this.log('Day-roll auto-unhalt: new UTC day, crash budget reset — restarting');
+      this.status = 'stopped';
+      recordAutoUnhalt(this.name, this.telegramApi, this.telegramChatId);
+      this.start().catch(err => this.log(`Auto-unhalt restart failed: ${err}`));
+    };
+    this.dailyResetTimer = setTimeout(() => {
+      tick();
+      this.dailyResetTimer = setInterval(tick, 60 * 60_000);
+      if (typeof this.dailyResetTimer.unref === 'function') this.dailyResetTimer.unref();
+    }, Math.max(0, msToNextHour));
+    if (typeof this.dailyResetTimer.unref === 'function') this.dailyResetTimer.unref();
+  }
+
+  private clearDailyResetTimer(): void {
+    if (this.dailyResetTimer) {
+      clearTimeout(this.dailyResetTimer);
+      clearInterval(this.dailyResetTimer);
+      this.dailyResetTimer = null;
+    }
+  }
+
   private notifyStatusChange(): void {
     if (this.onStatusChange) {
       this.onStatusChange(this.getStatus());
+    }
+  }
+
+  /**
+   * Schedule a background cron verification check.
+   *
+   * Waits for the agent to finish its startup sequence (detected via the
+   * last_idle.flag written by the Stop hook after the agent's first turn
+   * completes), then injects a lightweight prompt asking the agent to
+   * verify its crons match config.json and restore any that are missing.
+   *
+   * Safe for both fresh starts and --continue restarts: the idle-wait
+   * ensures we never inject mid-conversation.
+   *
+   * Fire-and-forget: errors are logged but never propagated.
+   */
+  scheduleCronVerification(): void {
+    const crons = this.config.crons;
+    if (!crons || crons.length === 0) return;
+
+    const recurringNames = crons
+      .filter(c => c.type !== 'once')
+      .map(c => c.name);
+    if (recurringNames.length === 0) return;
+
+    const generation = this.lifecycleGeneration;
+
+    // Run in background — don't block startup
+    this.verifyCronsAfterIdle(recurringNames, generation).catch(err => {
+      this.log(`Cron verification failed (non-fatal): ${err}`);
+    });
+  }
+
+  private async verifyCronsAfterIdle(
+    expectedCrons: string[],
+    generation: number,
+  ): Promise<void> {
+    const stateDir = join(this.env.ctxRoot, 'state', this.name);
+    const flagPath = join(stateDir, 'last_idle.flag');
+
+    // Record the idle flag timestamp at boot so we can detect the NEXT idle
+    // (i.e. after the agent has finished processing its startup prompt).
+    let bootIdleTs = 0;
+    try {
+      if (existsSync(flagPath)) {
+        bootIdleTs = parseInt(readFileSync(flagPath, 'utf-8').trim(), 10);
+      }
+    } catch { /* ignore */ }
+
+    // Wait up to 10 minutes for the agent to finish its startup turn.
+    // Poll every 15s. Bail if the agent stopped or a new lifecycle started.
+    const maxWaitMs = 10 * 60 * 1000;
+    const pollMs = 15_000;
+    const startTime = Date.now();
+    let foundIdle = false;
+
+    while (Date.now() - startTime < maxWaitMs) {
+      // Bail if this lifecycle is stale (agent restarted or stopped)
+      if (generation !== this.lifecycleGeneration || this.status !== 'running') {
+        return;
+      }
+
+      await sleep(pollMs);
+
+      try {
+        if (existsSync(flagPath)) {
+          const currentIdleTs = parseInt(readFileSync(flagPath, 'utf-8').trim(), 10);
+          if (currentIdleTs > bootIdleTs) {
+            // Agent has gone idle after boot — safe to inject
+            foundIdle = true;
+            break;
+          }
+        }
+      } catch { /* ignore read errors, keep polling */ }
+    }
+
+    // If the loop timed out without detecting an idle transition, do not inject:
+    // the agent never finished its startup turn (e.g. stuck on a very long boot).
+    if (!foundIdle) {
+      this.log('Cron verification: timed out waiting for idle flag, skipping injection');
+      return;
+    }
+
+    // Final stale check
+    if (generation !== this.lifecycleGeneration || this.status !== 'running') {
+      return;
+    }
+
+    // Inject the verification prompt
+    const cronList = expectedCrons.join(', ');
+    const verifyPrompt = `[SYSTEM] Cron verification: your config.json defines these recurring crons: ${cronList}. Run CronList now. If any are missing, restore them from config.json using /loop. This is an automated safety check.`;
+
+    this.log(`Injecting cron verification (expecting: ${cronList})`);
+    if (this.pty) {
+      injectMessage((data) => this.pty!.write(data), verifyPrompt);
     }
   }
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/** Max spawn attempts before declaring SPAWN-FAILED (gen-B spawn-verify). */
+const MAX_SPAWN_ATTEMPTS = 3;
+/** Base backoff between spawn retries (×2^(attempt-1) → 1s, 2s). */
+const SPAWN_RETRY_BASE_MS = 1000;
+
+const HARD_KILL_GRACE_MS = 8000;
+
+/** True if `pid` is a live process. `process.kill(pid, 0)` only probes. */
+export function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Classify a spawn failure into a coarse CLASS for fleet-wide alert dedup.
+ */
+export function classifySpawnFailure(err: unknown): string {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (msg.includes('posix_spawnp') || msg.includes('eagain') || msg.includes('enomem') || msg.includes('resource temporarily unavailable')) {
+    return 'posix_spawnp';
+  }
+  if (msg.includes('no live process')) {
+    return 'posix_spawnp';
+  }
+  if (msg.includes('enoent')) return 'ENOENT';
+  return 'spawn-error';
+}
+
+/**
+ * Collect all descendant pids of `pid` by walking ps ppid tree.
+ */
+export function collectDescendants(pid: number): number[] {
+  let rows: Array<[number, number]>;
+  try {
+    const out = execSync('ps -axo pid=,ppid=', { encoding: 'utf8' });
+    rows = out.trim().split('\n')
+      .map(l => l.trim().split(/\s+/).map(Number))
+      .filter((r): r is [number, number] => r.length === 2 && r.every(n => Number.isInteger(n) && n > 0));
+  } catch {
+    return [];
+  }
+  const childrenOf = new Map<number, number[]>();
+  for (const [p, pp] of rows) {
+    const arr = childrenOf.get(pp);
+    if (arr) arr.push(p); else childrenOf.set(pp, [p]);
+  }
+  const descendants: number[] = [];
+  const stack = [pid];
+  const seen = new Set<number>();
+  while (stack.length) {
+    const cur = stack.pop()!;
+    for (const k of childrenOf.get(cur) ?? []) {
+      if (seen.has(k)) continue;
+      seen.add(k);
+      descendants.push(k);
+      stack.push(k);
+    }
+  }
+  return descendants;
+}
+
+/**
+ * Hard-kill a wedged PTY child AND its descendants (#202).
+ */
+export function hardKillProcessGroup(pid: number): void {
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // Already gone.
+    }
+  }
 }

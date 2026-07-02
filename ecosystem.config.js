@@ -9,7 +9,7 @@ const FRAMEWORK_ROOT = process.env.CTX_FRAMEWORK_ROOT || __dirname;
 const PROJECT_ROOT = process.env.CTX_PROJECT_ROOT || FRAMEWORK_ROOT;
 const INSTANCE_ID = process.env.CTX_INSTANCE_ID || 'default';
 const CTX_ROOT = process.env.CTX_ROOT || path.join(os.homedir(), '.cortextos', INSTANCE_ID);
-const CTX_ORG = process.env.CTX_ORG || '';
+const CTX_ORG = process.env.CTX_ORG || 'click-to-acquire';
 
 module.exports = {
   apps: [
@@ -44,6 +44,20 @@ module.exports = {
       // also strengthening the upstream fix; the 2026-04-22 storm is a
       // reminder that unchecked auto-restart amplifies one bug into a
       // fleet-wide outage.
+      max_restarts: 10,
+      restart_delay: 5000,
+      autorestart: true,
+    },
+    {
+      name: 'cortextos-dashboard',
+      script: 'npm',
+      args: 'run dev',
+      cwd: path.join(FRAMEWORK_ROOT, 'dashboard'),
+      env: {
+        PORT: process.env.PORT || '3000',
+      },
+      // Dashboard reads its real config from dashboard/.env.local — populated
+      // by /onboarding Phase 7. PM2 just supervises the npm process.
       max_restarts: 10,
       restart_delay: 5000,
       autorestart: true,
