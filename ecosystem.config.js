@@ -48,19 +48,10 @@ module.exports = {
       restart_delay: 5000,
       autorestart: true,
     },
-    {
-      name: 'cortextos-dashboard',
-      script: 'npm',
-      args: 'run dev',
-      cwd: path.join(FRAMEWORK_ROOT, 'dashboard'),
-      env: {
-        PORT: process.env.PORT || '3000',
-      },
-      // Dashboard reads its real config from dashboard/.env.local — populated
-      // by /onboarding Phase 7. PM2 just supervises the npm process.
-      max_restarts: 10,
-      restart_delay: 5000,
-      autorestart: true,
-    },
+    // NOTE: the dashboard is intentionally NOT managed by PM2 on this machine.
+    // It runs in production mode under launchd (com.cortextos.dashboard.plist)
+    // paired with the Cloudflare tunnel LaunchAgent (com.cortextos.dashboard-tunnel).
+    // A second PM2-managed copy fights it for port 3000 and crash-loops on
+    // EADDRINUSE — exactly the 135-restart loop observed 2026-07-02.
   ],
 };
